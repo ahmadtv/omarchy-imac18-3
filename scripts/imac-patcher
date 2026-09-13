@@ -488,6 +488,10 @@ mod_autobright_apply() {
     autobright_install || { warn "installing wluma from the AUR failed"; return 1; }
     mkdir -p "$(dirname "$AB_CONF")"
     [[ -f $AB_CONF ]] && ! autobright_ours && cp -n "$AB_CONF" "${AB_CONF}.pre-imac-patcher"
+    # The sensor sits behind the glass and reads far below real lux: 0-1 in a
+    # dark room, ~38 under office lights, ~500 in daylight. wluma's example
+    # bands (20/80/250/500/800) would call a lit office "dark", so they are
+    # set for this sensor.
     # wluma 4.11 requires ALS thresholds and rejects unknown keys; later versions
     # add idle dimming and gamma (dim / colour temperature) control, both on by
     # default. Turn those off only when the installed binary knows them.
@@ -495,7 +499,7 @@ mod_autobright_apply() {
     {
         printf '%s\n' "$AB_MARK" '# Written by imac-patcher; "--remove autobright" puts back what was here.'
         printf '%s\n' '[als.iio]' 'path = "/sys/bus/iio/devices"' \
-            'thresholds = { 0 = "night", 20 = "dark", 80 = "dim", 250 = "normal", 500 = "bright", 800 = "outdoors" }' ''
+            'thresholds = { 0 = "night", 3 = "dark", 15 = "dim", 30 = "normal", 150 = "bright", 600 = "outdoors" }' ''
         ((newer)) && printf '%s\n' '[idle]' 'enabled = false' ''
         printf '%s\n' '[[output.backlight]]' 'name = "eDP-1"' 'path = "/sys/class/backlight/acpi_video0"' 'capturer = "none"'
         ((newer)) && printf '%s\n' 'gamma = false'

@@ -5,6 +5,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 ## 2026-09-14
 
 - **Auto-brightness works from the first minute.** Like a Mac, it now starts from a sensible curve (30% in a dark room up to 100% outdoors) instead of doing nothing until taught; any light level you have already set by hand keeps your own value, and every adjustment still teaches it.
+- **Auto-brightness reacts to room lights.** The iMac's light sensor sits behind the glass and reads far below real lux (about 38 under office lights), so wluma's standard light bands called a lit office "dark" and barely changed anything. The bands are now set for this sensor: switching the office lights on takes the screen from about 45% to 75%.
 
 ## 2026-09-13
 
