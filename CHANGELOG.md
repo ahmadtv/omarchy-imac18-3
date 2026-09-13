@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-13
+
+- **Auto-brightness** (new `autobright` module). The iMac's light sensor now drives the brightness through wluma, which learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it instead of being undone. Sensor only: no screen capture, no GPU, no root, no idle dimming or colour changes. Needs macOS mode. (Arch's `marked-man` is currently broken, so the install falls back to building wluma without its man page.)
+
 ## 2026-09-12
 
 - **Screen recordings at full speed** (new `record` module). The Radeon encodes 4K at only ~29 fps, so Omarchy's 4K recordings came out sped up, shorter than their audio, and slow to stop (sometimes "force-killed"). The Screenrecord menu now records at 1920×1080, a real 60 fps even with the webcam and audio on, so recordings play at the right speed (keeping Omarchy's icons and labels). 2560×1440 managed only 52 fps under that load.

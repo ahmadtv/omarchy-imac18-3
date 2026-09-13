@@ -4,12 +4,6 @@ What is still open on the iMac18,3 under Omarchy. Finished work is not kept
 here; `git log -p -- TODO.md` has every investigation, including the ones that
 led to the fixes now in `patches/`.
 
-## Auto-brightness
-
-The brightness control works in macOS mode (`imac-patcher --apply macos`, the
-default boot; see `igpu/README.md`). Still to do: wire the ambient light sensor
-(`acpi-als`, iio:device0) to `acpi_video0`.
-
 ## Video encode (VCE)
 
 Fixed: `patches/amdgpu-vce3-ring-align-mask.patch` (drm/amd#5595), and a GPU

@@ -37,7 +37,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ahmadtv/omarchy-imac18-3/mai
 | 🎨 **True colour** | The wide-gamut **Display P3** panel mapped correctly, instead of the oversaturated mess of stock sRGB. |
 | 🎬 **Hardware video encode** | Screen recording and H.264 export on the Radeon's own encoder, without the GPU hang every Polaris card has had since kernel 7.1.6 (AMD's upstream fix, backported until the distro kernel carries it). And if the GPU ever does hang, it now resets and you are back at a fresh desktop in about five seconds instead of a frozen machine. The two reset fixes are reported to AMD with patches: [drm/amd#5810](https://gitlab.freedesktop.org/drm/amd/-/issues/5810). Omarchy's recorder runs at 1080p, the size this encoder keeps up with at 60 fps alongside the webcam and audio. *(module `record`)* |
 | 🧠 **Intel Quick Sync (the hidden iGPU)** | Apple firmware hides the iMac's Intel HD 630 from anything that isn't macOS. The kernel already tells Apple firmware it's booting macOS on some MacBook Pros; this adds the iMac18,3 to that list — so the Intel chip appears and, like on macOS, takes over video: every app that uses the first GPU (ffmpeg, GStreamer, Strata previews, Kdenlive exports) encodes and decodes on Quick Sync, H.264 about **3.7× faster** than the Radeon, plus HEVC 10-bit and VP9. The Radeon keeps the display, the desktop and all 3D. Reported to Intel: [drm/i915#17042](https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/17042). *(module `macos`)* |
-| 🔆 **Brightness** | The brightness slider works — over the panel's **full 500-nit range** (Apple's ACPI table stops Linux at 80%, the same gap Boot Camp users see) — and the panel comes up at your saved brightness from power-on, like macOS. *(module `macos`)* |
+| 🔆 **Brightness** | The brightness slider works — over the panel's **full 500-nit range** (Apple's ACPI table stops Linux at 80%, the same gap Boot Camp users see) — and the panel comes up at your saved brightness from power-on, like macOS. *(module `macos`)* It can also follow the room's light, learning from how you set it. *(module `autobright`)* |
 
 ## 🖥️ On the machine
 
@@ -62,7 +62,6 @@ Thunderbolt is on the in-tree `atlantic`/`thunderbolt` drivers — tested with a
 Straight about the gaps:
 
 - 💳 **SD / memory-card reader** — not working yet. The card is recognised, then every read fails at the data phase; **still being worked on** — cross-checking against macOS on the same machine to tell a driver quirk from a genuine hardware fault.
-- 🔆 **Auto-brightness** — the ambient-light sensor works, but isn't wired to the (now working) backlight yet.
 - 😴 **Suspend / sleep** — hard-hangs the machine every time (Apple firmware; only a power-cycle recovers). The `suspend` module masks it so nothing triggers it by accident.
 
 ---
@@ -83,6 +82,7 @@ The patcher shows what's applied, what isn't, and lets you pick — **nothing is
 ./scripts/imac-patcher --apply audio   # speakers, mics, EarPods + buttons
 ./scripts/imac-patcher --apply vram    # ggml/Vulkan tools off the 256 MiB CPU-visible window
 ./scripts/imac-patcher --apply record  # Omarchy's screen recordings at 1080p, full speed (the Radeon encodes 4K at ~29 fps)
+./scripts/imac-patcher --apply autobright  # brightness follows the room's light; learns from your own adjustments (wluma)
 ./scripts/imac-patcher --apply macos   # Intel iGPU for video + working, full-range brightness (kernel tells the firmware it's macOS)
 ./scripts/imac-patcher --remove 5k     # full undo, any time
 ```

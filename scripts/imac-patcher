@@ -50,7 +50,7 @@ mkdir -p "$LOGDIR" "$CACHE"
 # they are the same on every machine. Those live in omarchy-tweaks, which
 # brings its own tool and its own bar widget. This is a one-time run per
 # machine, so it stays a terminal thing.
-MODULES=(audio color vram record suspend gpureset boot 5k macos)
+MODULES=(audio color vram record autobright suspend gpureset boot 5k macos)
 # Retired: wifi (the Broadcom handshake fix) -- Omarchy ships it for every Mac
 # since omacom/omarchy#6652, in the same /etc/modprobe.d/brcmfmac.conf.
 
@@ -403,6 +403,76 @@ mod_record_remove() {
         [[ -s $REC_MPV ]] || rm -f "$REC_MPV"
     fi
     say "Screenrecord menu back to Omarchy's defaults; webcam overlay as Omarchy starts it"
+}
+
+# ═══════════════════════ module: autobright ════════════════════════════════
+# Auto-brightness from the iMac's ambient light sensor (acpi-als, via IIO).
+# wluma (AUR) learns from the user: it does nothing until the brightness has been
+# set by hand a few times in different light, then predicts it, and a manual
+# change after that is a new data point, not something to fight. It sets the
+# brightness through logind, so it runs as the user. Sensor only: capturer =
+# "none" (no screen capture, so no Vulkan buffers in the Radeon's 256 MiB
+# window), idle dimming off (Omarchy's idle and screensaver stay in charge),
+# gamma = false (Omarchy's night light keeps the output's gamma). The firmware
+# backlight only dims in macOS mode, so this needs the macos module.
+AB_CONF="${HOME}/.config/wluma/config.toml"
+AB_MARK="# imac-patcher: autobright"
+mod_autobright_title() { echo "Auto-brightness from the light sensor"; }
+mod_autobright_tier()  { echo safe; }
+mod_autobright_desc()  { echo "Follows the room's light with the iMac's light sensor (wluma, from the AUR). It learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it rather than get undone. Needs macOS mode for the backlight to respond."; }
+autobright_ours() { grep -qxF "$AB_MARK" "$AB_CONF" 2>/dev/null; }
+# Arch's marked-man 2.1.1 needs marked ^12 but runs on marked 15 and crashes
+# ("text.trim is not a function") in wluma's man page step, so the AUR build
+# fails. Fall back to the same build with the man page allowed to come out empty.
+autobright_install() {
+    pacman -Q wluma >/dev/null 2>&1 && return 0
+    omarchy-pkg-aur-add wluma && return 0
+    warn "the AUR build failed; retrying without wluma's man page (Arch's marked-man is broken)"
+    local d rc
+    d="$(mktemp -d)"
+    (cd "$d" && yay -G wluma >/dev/null && cd wluma &&
+        sed -i '/marked-man -i README.md/s/$/ || : > "${pkgname}.7"/' PKGBUILD &&
+        makepkg -si --noconfirm --needed --nocheck)
+    rc=$?; rm -rf "$d"; return $rc
+}
+mod_autobright_detect() {
+    compgen -G '/sys/bus/iio/devices/iio:device*/in_illuminance_input' >/dev/null || { echo n/a; return; }
+    local ours=0 on=0
+    autobright_ours && ours=1
+    systemctl --user is-enabled -q wluma.service 2>/dev/null && on=1
+    if ((ours && on)) && pacman -Q wluma >/dev/null 2>&1; then echo applied
+    elif ((!ours && !on)); then echo not-applied
+    else echo partial; fi
+}
+mod_autobright_apply() {
+    [[ -e /sys/bus/pci/devices/0000:00:02.0 ]] || \
+        warn "macOS mode is off: acpi_video0 won't dim until the macos module is applied and you reboot"
+    autobright_install || { warn "installing wluma from the AUR failed"; return 1; }
+    mkdir -p "$(dirname "$AB_CONF")"
+    [[ -f $AB_CONF ]] && ! autobright_ours && cp -n "$AB_CONF" "${AB_CONF}.pre-imac-patcher"
+    # wluma 4.11 requires ALS thresholds and rejects unknown keys; later versions
+    # add idle dimming and gamma (dim / colour temperature) control, both on by
+    # default. Turn those off only when the installed binary knows them.
+    local newer=0; grep -qaw gamma "$(command -v wluma)" && newer=1
+    {
+        printf '%s\n' "$AB_MARK" '# Written by imac-patcher; "--remove autobright" puts back what was here.'
+        printf '%s\n' '[als.iio]' 'path = "/sys/bus/iio/devices"' \
+            'thresholds = { 0 = "night", 20 = "dark", 80 = "dim", 250 = "normal", 500 = "bright", 800 = "outdoors" }' ''
+        ((newer)) && printf '%s\n' '[idle]' 'enabled = false' ''
+        printf '%s\n' '[[output.backlight]]' 'name = "eDP-1"' 'path = "/sys/class/backlight/acpi_video0"' 'capturer = "none"'
+        ((newer)) && printf '%s\n' 'gamma = false'
+    } >"$AB_CONF"
+    systemctl --user daemon-reload
+    systemctl --user enable --now wluma.service || return 1
+    say "auto-brightness on: set the brightness by hand a few times, in different light, and it takes over"
+}
+mod_autobright_remove() {
+    systemctl --user disable --now wluma.service 2>/dev/null
+    if autobright_ours; then
+        rm -f "$AB_CONF"
+        [[ -f ${AB_CONF}.pre-imac-patcher ]] && mv "${AB_CONF}.pre-imac-patcher" "$AB_CONF"
+    fi
+    say "auto-brightness off; what it learned is kept (wluma stays installed: yay -Rns wluma to remove it)"
 }
 
 # ═══════════════════════ module: gpureset ══════════════════════════════════
