@@ -4,7 +4,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 
 ## 2026-09-13
 
-- **Auto-brightness** (new `autobright` module). The iMac's light sensor now drives the brightness through wluma, which learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it instead of being undone. Sensor only: no screen capture, no GPU, no root, no idle dimming or colour changes. Needs macOS mode. (Arch's `marked-man` is currently broken, so the install falls back to building wluma without its man page.)
+- **Auto-brightness** (new `autobright` module). The iMac's light sensor now drives the brightness through wluma, which learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it instead of being undone. Sensor only: no screen capture, no GPU, no root, no idle dimming or colour changes. A sun-with-an-A icon on the bar switches it on and off. Needs macOS mode. (Arch's `marked-man` is currently broken, so the install falls back to building wluma without its man page.)
 
 ## 2026-09-12
 

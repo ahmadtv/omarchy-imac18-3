@@ -417,6 +417,28 @@ mod_record_remove() {
 # backlight only dims in macOS mode, so this needs the macos module.
 AB_CONF="${HOME}/.config/wluma/config.toml"
 AB_MARK="# imac-patcher: autobright"
+# Bar switch: bright while wluma runs, dimmed while it doesn't; a click enables
+# or disables the service. Placed before the monitor icon on the right.
+AB_BAR_ID=imac.autobright
+AB_BAR_SRC="${REPO_DIR}/shell/${AB_BAR_ID}"
+AB_BAR_DEST="${HOME}/.config/omarchy/plugins/${AB_BAR_ID}"
+AB_SHELL_JSON="${HOME}/.config/omarchy/shell.json"
+autobright_bar_add() {
+    install -d "$AB_BAR_DEST" && install -m644 "$AB_BAR_SRC/manifest.json" "$AB_BAR_SRC/BarWidget.qml" "$AB_BAR_DEST/" || return 1
+    [[ -f $AB_SHELL_JSON ]] || { warn "no $AB_SHELL_JSON yet: open the bar once, then apply again to get the switch"; return 0; }
+    jq -e --arg id "$AB_BAR_ID" '[.bar.layout[]?[]?.id] | index($id) != null' "$AB_SHELL_JSON" >/dev/null && return 0
+    cp "$AB_SHELL_JSON" "${AB_SHELL_JSON}.bak-autobright"
+    jq --arg id "$AB_BAR_ID" '.bar.layout.right = ((.bar.layout.right // []) as $r
+        | ($r | map(.id) | index("omarchy.monitor")) as $i
+        | if $i == null then $r + [{"id":$id}] else $r[:$i] + [{"id":$id}] + $r[$i:] end)' \
+        "$AB_SHELL_JSON" >"${AB_SHELL_JSON}.tmp" && mv "${AB_SHELL_JSON}.tmp" "$AB_SHELL_JSON"
+}
+autobright_bar_remove() {
+    rm -rf "$AB_BAR_DEST"
+    [[ -f $AB_SHELL_JSON ]] || return 0
+    jq --arg id "$AB_BAR_ID" '.bar.layout |= with_entries(.value |= map(select(.id != $id)))' \
+        "$AB_SHELL_JSON" >"${AB_SHELL_JSON}.tmp" && mv "${AB_SHELL_JSON}.tmp" "$AB_SHELL_JSON"
+}
 mod_autobright_title() { echo "Auto-brightness from the light sensor"; }
 mod_autobright_tier()  { echo safe; }
 mod_autobright_desc()  { echo "Follows the room's light with the iMac's light sensor (wluma, from the AUR). It learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it rather than get undone. Needs macOS mode for the backlight to respond."; }
@@ -437,11 +459,13 @@ autobright_install() {
 }
 mod_autobright_detect() {
     compgen -G '/sys/bus/iio/devices/iio:device*/in_illuminance_input' >/dev/null || { echo n/a; return; }
-    local ours=0 on=0
+    # Whether wluma is switched on right now is the bar switch's business, not
+    # the install's: applied = installed, configured and on the bar.
+    local ours=0 bar=0
     autobright_ours && ours=1
-    systemctl --user is-enabled -q wluma.service 2>/dev/null && on=1
-    if ((ours && on)) && pacman -Q wluma >/dev/null 2>&1; then echo applied
-    elif ((!ours && !on)); then echo not-applied
+    [[ -f $AB_BAR_DEST/BarWidget.qml ]] && bar=1
+    if ((ours && bar)) && pacman -Q wluma >/dev/null 2>&1; then echo applied
+    elif ((!ours && !bar)); then echo not-applied
     else echo partial; fi
 }
 mod_autobright_apply() {
@@ -464,10 +488,13 @@ mod_autobright_apply() {
     } >"$AB_CONF"
     systemctl --user daemon-reload
     systemctl --user enable --now wluma.service || return 1
+    autobright_bar_add || warn "could not put the switch on the bar"
     say "auto-brightness on: set the brightness by hand a few times, in different light, and it takes over"
+    say "switch it off and on from the sun-with-an-A icon on the bar"
 }
 mod_autobright_remove() {
     systemctl --user disable --now wluma.service 2>/dev/null
+    autobright_bar_remove
     if autobright_ours; then
         rm -f "$AB_CONF"
         [[ -f ${AB_CONF}.pre-imac-patcher ]] && mv "${AB_CONF}.pre-imac-patcher" "$AB_CONF"
