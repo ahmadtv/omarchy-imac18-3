@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-14
+
+- **Auto-brightness works from the first minute.** Like a Mac, it now starts from a sensible curve (30% in a dark room up to 100% outdoors) instead of doing nothing until taught; any light level you have already set by hand keeps your own value, and every adjustment still teaches it.
+
 ## 2026-09-13
 
 - **Auto-brightness** (new `autobright` module). The iMac's light sensor now drives the brightness through wluma, which learns from you: set the brightness by hand a few times in different light and it takes over, and later changes teach it instead of being undone. Sensor only: no screen capture, no GPU, no root, no idle dimming or colour changes. Switch it with `systemctl --user disable --now wluma` (and `enable --now` to turn it back on). Needs macOS mode. (Arch's `marked-man` is currently broken, so the install falls back to building wluma without its man page.)

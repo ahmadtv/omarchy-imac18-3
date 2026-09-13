@@ -446,6 +446,34 @@ autobright_install() {
         makepkg -si --noconfirm --needed --nocheck)
     rc=$?; rm -rf "$d"; return $rc
 }
+# A Mac's auto-brightness works the moment it is on; wluma starts empty and
+# does nothing until taught. Seed a starting curve for every light band that
+# has no lesson yet (never touching one that has), as a share of the panel's
+# maximum. wluma keeps its lessons in memory and rewrites this file, so it is
+# stopped while the file changes.
+AB_DATA="${HOME}/.local/share/wluma/eDP-1.yaml"
+autobright_seed() {
+    local max; max="$(cat /sys/class/backlight/acpi_video0/max_brightness 2>/dev/null)" || return 0
+    systemctl --user stop wluma.service 2>/dev/null
+    mkdir -p "$(dirname "$AB_DATA")"
+    python3 - "$AB_DATA" "$max" <<'PY'
+import os, re, sys
+path, maxb = sys.argv[1], int(sys.argv[2])
+seed = {"night": 30, "dark": 45, "dim": 60, "normal": 75, "bright": 90, "outdoors": 100}
+have = {}
+if os.path.exists(path):
+    for lux, luma, b in re.findall(r"- lux: (\w+)\n  luma: (\d+)\n  brightness: (\d+)", open(path).read()):
+        have[(lux, int(luma))] = int(b)
+for band, pct in seed.items():
+    if not any(lux == band for lux, _ in have):
+        have[(band, 0)] = max(1, round(maxb * pct / 100))
+order = list(seed)
+out = ["output_name: eDP-1", "entries:"]
+for (lux, luma), b in sorted(have.items(), key=lambda kv: (order.index(kv[0][0]) if kv[0][0] in order else 99, kv[0][1])):
+    out += [f"- lux: {lux}", f"  luma: {luma}", f"  brightness: {b}"]
+open(path, "w").write("\n".join(out) + "\n")
+PY
+}
 mod_autobright_detect() {
     compgen -G '/sys/bus/iio/devices/iio:device*/in_illuminance_input' >/dev/null || { echo n/a; return; }
     # Whether wluma is switched on right now is the switch's business (the
@@ -473,9 +501,10 @@ mod_autobright_apply() {
         ((newer)) && printf '%s\n' 'gamma = false'
     } >"$AB_CONF"
     systemctl --user daemon-reload
+    autobright_seed
     systemctl --user enable --now wluma.service || return 1
     autobright_old_bar_remove
-    say "auto-brightness on: set the brightness by hand a few times, in different light, and it takes over"
+    say "auto-brightness on: it follows the room from now on, and learns from every adjustment you make"
     say "off: systemctl --user disable --now wluma   on again: systemctl --user enable --now wluma"
 }
 mod_autobright_remove() {
