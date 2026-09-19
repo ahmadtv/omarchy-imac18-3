@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-19
+
+- **EarPods buttons hold properly.** Holding volume up or down now ramps the volume the whole time you hold it, instead of moving one step. The kernel's usual helper for jack buttons reports a press and its release back to back, so every press reached the desktop as a 0 ms tap however long the button was held; the driver now reports the press and the release itself. Holding the centre button sends `KEY_VOICECOMMAND` the moment the hold passes 300 ms, while it is still held (the way holding it starts Siri), so it can drive dictation; a tap is still play/pause. A held key is released anyway after 3 s if its release is ever lost, and on unplug and suspend. Thresholds are the `button_long_press_ms` and `button_max_hold_ms` module parameters.
+
 ## 2026-09-14
 
 - **Auto-brightness works from the first minute.** Like a Mac, it now starts from a sensible curve (30% in a dark room up to 100% outdoors) instead of doing nothing until taught; any light level you have already set by hand keeps your own value, and every adjustment still teaches it.

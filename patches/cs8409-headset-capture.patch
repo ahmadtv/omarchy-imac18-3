@@ -120,27 +120,45 @@ playback prepare path handles on its own.
 6. Headset remote buttons.
    The three earbud buttons each raise a distinct bit in the disambiguated
    interrupt word -- volume down 0x10000 and volume up 0x20000 in the 0x1b79
-   detect register, play/pause 0x100 (down) / 0x200 (up) in 0x1b7c -- so
-   cs_8409_headset_button_event reads the button straight from the interrupt
-   and emits KEY_VOLUMEDOWN / KEY_VOLUMEUP / KEY_PLAYPAUSE (once, on the down
-   edge). There is no comparator sweep and no HSBIAS poking: an earlier attempt
+   detect register, centre 0x100 (down) / 0x200 (up) in 0x1b7c -- and a
+   release edge arrives as 0x100000. cs_8409_headset_button_event tracks the
+   press and the release, so a held button stays held:
+   - A volume key goes down on its press bit and up on the release interrupt.
+     Holding it therefore repeats like any held keyboard key, since the
+     compositor repeats what is still down. A held key is also released after
+     button_max_hold_ms (default 3000) in case the release interrupt is lost,
+     and on unplug, suspend and codec removal, so nothing can stay ramping.
+   - The centre button taps KEY_PLAYPAUSE. Held for button_long_press_ms
+     (default 300, 0 = off) it sends KEY_VOICECOMMAND at that moment, while
+     still held, the way holding it starts Siri -- bind that key to whatever
+     dictation or assistant the desktop runs. The up edge is then a no-op.
+   These keys cannot go through snd_hda_jack_set_button_state plus
+   snd_hda_jack_report_sync, the usual pair: report_sync (sound/hda/common/
+   jack.c) reports a button press and its release back to back and clears
+   button_state, so however long a button was held, userspace saw a 0 ms tap
+   and holding a volume key stepped the volume exactly once. The state is
+   instead reported straight to the jack the keymap is bound to, with
+   snd_jack_report, press on the press edge and release on the release edge.
+   There is no comparator sweep and no HSBIAS poking: an earlier attempt
    powered the CS42L83 mic level detector up and down around every press to
    measure a resistance, which clicked through live audio and, under a mutex-
    less interrupt storm, jammed the handler. All of that scaffolding is gone.
    The one register the buttons need is Detect Interrupt Mask 2 (0x1b7a): the
    plug-time button detection ends by re-masking it to 0xff, which gates the
-   two play/pause bits, so after detection it is set to the OSX steady-state
+   two centre-button bits, so after detection it is set to the OSX steady-state
    0xdc (those two bits open, the volume buttons on 0x1b79 unaffected). Gated
-   by the headset_buttons module parameter, now on by default. Verified: each
-   physical press delivers exactly one key (no repeats, no debounced drops) and
-   audio, capture and the jack-follow all keep working across presses.
+   by the headset_buttons module parameter, now on by default. Verified on
+   hardware: a 2.18 s volume-up hold delivered one press and one release 2.18 s
+   apart and moved the volume 55 times; taps gave play/pause; a centre hold
+   sent KEY_VOICECOMMAND at the threshold, with audio, capture and the
+   jack-follow all still working across presses.
 
 Known remaining issue: a loud high-pitched artefact is audible on the headset
 output at the moment of plug-in. Not diagnosed. Most likely HSBIAS being
 asserted abruptly or the output SRC not locking cleanly.
 
 diff --git i/patch_cirrus/cirrus_apple.h w/patch_cirrus/cirrus_apple.h
-index 7e9bcd1..02c89ec 100644
+index 7e9bcd1..757e3b0 100644
 --- i/patch_cirrus/cirrus_apple.h
 +++ w/patch_cirrus/cirrus_apple.h
 @@ -2,6 +2,9 @@
@@ -180,7 +198,17 @@ index 7e9bcd1..02c89ec 100644
  	// changing coding - OSX sets up the format on plugin
  	// then does some minimal setup when start play
  	// initial coding delayed any format setup till actually play
-@@ -740,6 +756,9 @@ static int cs_8409_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
+@@ -698,6 +714,9 @@ void cs_8409_cs42l83_jack_report_hp_update(struct hda_codec *codec, int plugin);
+ void cs_8409_cs42l83_jack_unsol_event(struct hda_codec *codec, unsigned int res);
+ 
+ void cs_8409_apple_remove(struct hda_codec *codec);
++static void cs_8409_button_release_work(struct work_struct *work);
++static void cs_8409_centre_long_work(struct work_struct *work);
++static void cs_8409_headset_button_release(struct hda_codec *codec);
+ 
+ 
+ 
+@@ -740,6 +759,9 @@ static int cs_8409_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
  {
          struct hda_gen_spec *spec = codec->spec;
          int err;
@@ -190,7 +218,7 @@ index 7e9bcd1..02c89ec 100644
          mycodec_info(codec, "cs_8409_playback_pcm_prepare\n");
  
          mycodec_info(codec, "cs_8409_playback_pcm_prepare: NID=0x%x, stream=0x%x, format=0x%x\n",
-@@ -787,11 +806,52 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
+@@ -787,11 +809,52 @@ static int cs_8409_capture_pcm_prepare(struct hda_pcm_stream *hinfo,
  {
          struct cs8409_apple_spec *spec = codec->spec;
  
@@ -243,7 +271,19 @@ index 7e9bcd1..02c89ec 100644
  
          cs_8409_pcm_capture_pre_prepare_hook(hinfo, codec, stream_tag, format, substream,
                                HDA_GEN_PCM_ACT_PREPARE);
-@@ -1470,6 +1530,37 @@ static int cs_8409_apple_check_power_status(struct hda_codec *codec, hda_nid_t n
+@@ -1458,7 +1521,10 @@ static int cs_8409_apple_resume(struct hda_codec *codec)
+ static int cs_8409_apple_suspend(struct hda_codec *codec)
+ {
+         myprintk("snd_hda_intel: cs_8409_apple_suspend\n");
+-        // no additional code for this so just dummy it
++        // a held headset volume key must not stay held across a suspend
++        cs_8409_headset_button_release(codec);
++        cancel_delayed_work_sync(&((struct cs8409_apple_spec *)codec->spec)->button_release_work);
++        cancel_delayed_work_sync(&((struct cs8409_apple_spec *)codec->spec)->centre_long_work);
+         return 0;
+ }
+ 
+@@ -1470,6 +1536,37 @@ static int cs_8409_apple_check_power_status(struct hda_codec *codec, hda_nid_t n
  }
  
  
@@ -281,7 +321,7 @@ index 7e9bcd1..02c89ec 100644
  static int cs_8409_apple_build_controls(struct hda_codec *codec)
  {
  	int err;
-@@ -1491,6 +1582,31 @@ static int cs_8409_apple_build_controls(struct hda_codec *codec)
+@@ -1491,6 +1588,31 @@ static int cs_8409_apple_build_controls(struct hda_codec *codec)
  		return err;
  	snd_hda_apply_fixup(codec, HDA_FIXUP_ACT_BUILD);
  
@@ -313,7 +353,7 @@ index 7e9bcd1..02c89ec 100644
  	// this seems better as snd_hda_gen_build_controls does an hda_exec_init_verbs call
  	// before calling the init patch_ops function
  	// - on the other hand currently it is just dumping data doesnt actually do anything
-@@ -1592,40 +1708,12 @@ static void cs8409_fix_caps_debug(struct hda_codec *codec, unsigned int nid)
+@@ -1592,40 +1714,12 @@ static void cs8409_fix_caps_debug(struct hda_codec *codec, unsigned int nid)
  
  void cs_8409_cs42l83_mark_jack(struct hda_codec *codec)
  {
@@ -358,7 +398,7 @@ index 7e9bcd1..02c89ec 100644
  
          mycodec_info(codec, "end cs_8409_cs42l83_mark_jack\n");
  }
-@@ -1654,11 +1742,14 @@ static void cs_8409_cs42l83_unsol_event_handler(struct hda_codec *codec, unsigne
+@@ -1654,11 +1748,14 @@ static void cs_8409_cs42l83_unsol_event_handler(struct hda_codec *codec, unsigne
  
  void cs_8409_cs42l83_jack_unsol_event(struct hda_codec *codec, unsigned int res)
  {
@@ -373,7 +413,16 @@ index 7e9bcd1..02c89ec 100644
  	// so we have confirmed that these unsol responses are not in linux kernel interrupt state
  	//if (in_interrupt())
  	//	mycodec_info(codec, "cs_8409_cs42l83_unsol_event - INTERRUPT\n");
-@@ -2557,7 +2648,7 @@ static int cs8409_cs42l83_exec_verb(struct hdac_device *dev, unsigned int cmd, u
+@@ -1761,6 +1858,8 @@ void cs_8409_apple_remove(struct hda_codec *codec)
+ 
+ 	//del_timer(&cs_8409_hp_timer);
+ 
++	cancel_delayed_work_sync(&((struct cs8409_apple_spec *)codec->spec)->button_release_work);
++	cancel_delayed_work_sync(&((struct cs8409_apple_spec *)codec->spec)->centre_long_work);
+ 	snd_hda_gen_remove(codec);
+ }
+ 
+@@ -2557,7 +2656,7 @@ static int cs8409_cs42l83_exec_verb(struct hdac_device *dev, unsigned int cmd, u
                          //*res = (cs42l83->mic_jack_in) ? AC_PINSENSE_PRESENCE : 0;
                          // initially use my jack_present flag integer
  			myprintk("snd_hda_intel: cs 8409 exec verb pin sense 0x%04x %d\n", nid, spec->jack_present);
@@ -382,15 +431,18 @@ index 7e9bcd1..02c89ec 100644
                          return 0;
                  }
          } else if (nid == spec->linein_nid) {
-@@ -2584,6 +2675,7 @@ static struct cs8409_apple_spec *cs8409_apple_alloc_spec(struct hda_codec *codec
+@@ -2584,6 +2683,10 @@ static struct cs8409_apple_spec *cs8409_apple_alloc_spec(struct hda_codec *codec
  	if (!spec)
  		return NULL;
  	codec->spec = spec;
 +	mutex_init(&spec->setup_mutex);
++	mutex_init(&spec->button_lock);
++	INIT_DELAYED_WORK(&spec->button_release_work, cs_8409_button_release_work);
++	INIT_DELAYED_WORK(&spec->centre_long_work, cs_8409_centre_long_work);
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
  	spec->codec = codec;
  #endif
-@@ -2927,9 +3019,14 @@ static int cs8409_apple(struct hda_codec *codec)
+@@ -2927,9 +3030,14 @@ static int cs8409_apple(struct hda_codec *codec)
  
          spec->have_buttons = 0;
  
@@ -599,7 +651,7 @@ index a40a6f5..777a9d7 100644
  
  
 diff --git i/patch_cirrus/patch_cirrus_real84.h w/patch_cirrus/patch_cirrus_real84.h
-index 76de5e8..1e4190d 100644
+index 76de5e8..a35551e 100644
 --- i/patch_cirrus/patch_cirrus_real84.h
 +++ w/patch_cirrus/patch_cirrus_real84.h
 @@ -282,13 +282,100 @@ static void cs_8409_linein_volume_setup_new(struct hda_codec *codec, int volume)
@@ -893,7 +945,7 @@ index 76de5e8..1e4190d 100644
  
          }
          else
-@@ -5292,13 +5450,83 @@ static void cs_8409_headset_button_detect_event(struct hda_codec *codec)
+@@ -5292,13 +5450,212 @@ static void cs_8409_headset_button_detect_event(struct hda_codec *codec)
          if ((ret_mike & MIKE_CONNECT) != MIKE_CONNECT)
                  dev_err(hda_codec_dev(codec), "ERROR - has mike but mike not connected - not analyzed!!\n");
  
@@ -930,55 +982,184 @@ index 76de5e8..1e4190d 100644
 +module_param(button_debounce_ms, int, 0644);
 +MODULE_PARM_DESC(button_debounce_ms, "ignore a press within this many ms of the previous one (default 80)");
 +
++// the centre button held this long sends KEY_VOICECOMMAND (the assistant, like
++// holding it for Siri) the moment the time is up, while it is still held;
++// released sooner it is KEY_PLAYPAUSE
++static int button_long_press_ms = 300;
++module_param(button_long_press_ms, int, 0644);
++MODULE_PARM_DESC(button_long_press_ms, "hold the centre button this many ms for KEY_VOICECOMMAND instead of KEY_PLAYPAUSE, 0 = off (default 300)");
++
++// a held volume key is released after this long if the codec's release
++// interrupt never arrives, so a lost interrupt cannot leave volume ramping
++static int button_max_hold_ms = 3000;
++module_param(button_max_hold_ms, int, 0644);
++MODULE_PARM_DESC(button_max_hold_ms, "release a held volume key after this many ms if its release never arrives (default 3000)");
++
++// Report the remote's key state straight to the jack the keymap is bound to
++// (the headphone jack, see cs_8409_apple_build_controls). The usual
++// snd_hda_jack_set_button_state + snd_hda_jack_report_sync pair cannot hold a
++// key: report_sync sends every button press and its release back to back, so
++// a held volume key reached userspace as one tap and never repeated.
++static void cs_8409_headset_button_report(struct hda_codec *codec, int btn)
++{
++        struct hda_jack_tbl *jack = snd_hda_jack_tbl_get(codec, CS8409_CS42L83_HP_MIC_PIN_NID);
++        int state = btn;
++
++        if (jack && jack->key_report_jack)
++                jack = snd_hda_jack_tbl_get(codec, jack->key_report_jack);
++        if (!jack || !jack->jack)
++                return;
++        if (jack->pin_sense & AC_PINSENSE_PRESENCE)
++                state |= jack->type;
++        snd_jack_report(jack->jack, state);
++}
++
++// caller holds button_lock
++static void cs_8409_headset_button_release_locked(struct hda_codec *codec)
++{
++        struct cs8409_apple_spec *spec = codec->spec;
++
++        if (!spec->held_button)
++                return;
++        spec->held_button = 0;
++        cs_8409_headset_button_report(codec, 0);
++}
++
++// release a held key (unplug, suspend): nothing may stay held down
++static void cs_8409_headset_button_release(struct hda_codec *codec)
++{
++        struct cs8409_apple_spec *spec = codec->spec;
++
++        mutex_lock(&spec->button_lock);
++        cancel_delayed_work(&spec->button_release_work);
++        cancel_delayed_work(&spec->centre_long_work);
++        spec->centre_down_jiffies = 0;
++        cs_8409_headset_button_release_locked(codec);
++        mutex_unlock(&spec->button_lock);
++}
++
++static void cs_8409_button_release_work(struct work_struct *work)
++{
++        struct cs8409_apple_spec *spec = container_of(to_delayed_work(work),
++                                                      struct cs8409_apple_spec, button_release_work);
++
++        mutex_lock(&spec->button_lock);
++        if (spec->held_button) {
++                dev_info(hda_codec_dev(spec->codec),
++                         "cs_8409_headset_button_event - no release after %d ms, releasing\n", button_max_hold_ms);
++                cs_8409_headset_button_release_locked(spec->codec);
++        }
++        mutex_unlock(&spec->button_lock);
++}
++
++// the centre button is still down button_long_press_ms after it went down:
++// send KEY_VOICECOMMAND now rather than waiting for the release, so the
++// assistant starts while the button is held. Clearing centre_down_jiffies
++// makes the coming up edge a no-op.
++static void cs_8409_centre_long_work(struct work_struct *work)
++{
++        struct cs8409_apple_spec *spec = container_of(to_delayed_work(work),
++                                                      struct cs8409_apple_spec, centre_long_work);
++
++        mutex_lock(&spec->button_lock);
++        if (spec->centre_down_jiffies) {
++                spec->centre_down_jiffies = 0;
++                dev_info(hda_codec_dev(spec->codec),
++                         "cs_8409_headset_button_event - centre held %d ms -> VOICECOMMAND\n", button_long_press_ms);
++                cs_8409_headset_button_report(spec->codec, SND_JACK_BTN_1);
++                cs_8409_headset_button_report(spec->codec, 0);
++        }
++        mutex_unlock(&spec->button_lock);
++}
++
  static void cs_8409_headset_button_event(struct hda_codec *codec, int buttons)
  {
 -        mycodec_info(codec, "cs_8409_headset_button_event  buttons 0x%08x\n", buttons);
 +        static unsigned long last_press_jiffies;
-+        int btn;
-+        const char *keyname;
++        struct cs8409_apple_spec *spec = codec->spec;
++        int btn, held;
 +
 +        if (!headset_buttons)
 +                return;
 +
-+        // Each earbud button arrives as a distinct bit in the disambiguated
-+        // interrupt word, so there is nothing to measure:
-+        //   volume down  0x10000 (BUTTON_DOWN_PRESS)
-+        //   volume up     0x20000 (BUTTON_UP_PRESS)
-+        //   play/pause    0x100 on down, 0x200 on up (BUTTON_TOGGLE_*)
-+        // Fire play/pause once, on its down edge; let its up edge and the
-+        // separate release interrupt (0x100000) pass silently.
-+        if (buttons & BUTTON_DOWN_PRESS) {
-+                btn = SND_JACK_BTN_3;
-+                keyname = "VOLUMEDOWN";
-+        } else if (buttons & BUTTON_UP_PRESS) {
-+                btn = SND_JACK_BTN_2;
-+                keyname = "VOLUMEUP";
-+        } else if (buttons & BUTTON_TOGGLE_DOWN_PRESS) {
-+                btn = SND_JACK_BTN_0;
-+                keyname = "PLAYPAUSE";
-+        } else {
-+                return;
++        mutex_lock(&spec->button_lock);
++
++        // Each earbud button arrives as distinct bits in the disambiguated
++        // interrupt word, and the codec reports releases too:
++        //   volume down  0x10000 (BUTTON_DOWN_PRESS), released by 0x100000
++        //   volume up    0x20000 (BUTTON_UP_PRESS),   released by 0x100000
++        //   centre       0x100 down, 0x200 up (BUTTON_TOGGLE_*)
++        //
++        // Centre, like Apple's remote: held for button_long_press_ms it sends
++        // KEY_VOICECOMMAND right then, from centre_long_work, while still
++        // held; released sooner it is KEY_PLAYPAUSE. Each is a press and
++        // release. The up-edge time check below is only a fallback for when
++        // the up edge beats a late-running centre_long_work.
++        if (buttons & BUTTON_TOGGLE_DOWN_PRESS) {
++                spec->centre_down_jiffies = jiffies ? jiffies : 1;
++                if (button_long_press_ms > 0)
++                        mod_delayed_work(system_wq, &spec->centre_long_work,
++                                         msecs_to_jiffies(button_long_press_ms));
++        }
++        if (buttons & BUTTON_TOGGLE_UP_PRESS) {
++                cancel_delayed_work(&spec->centre_long_work);
++                if (!spec->centre_down_jiffies)
++                        goto out;       // long press already sent, or no down edge
++                held = button_long_press_ms > 0 &&
++                       time_after_eq(jiffies, spec->centre_down_jiffies +
++                                     msecs_to_jiffies(button_long_press_ms));
++                spec->centre_down_jiffies = 0;
++                btn = held ? SND_JACK_BTN_1 : SND_JACK_BTN_0;
++                cancel_delayed_work(&spec->button_release_work);
++                cs_8409_headset_button_release_locked(codec);
++                dev_info(hda_codec_dev(codec), "cs_8409_headset_button_event - 0x%08x -> %s\n",
++                         buttons, held ? "VOICECOMMAND" : "PLAYPAUSE");
++                cs_8409_headset_button_report(codec, btn);
++                cs_8409_headset_button_report(codec, 0);
++                goto out;
 +        }
 +
-+        if (button_debounce_ms > 0 && last_press_jiffies &&
-+            time_before(jiffies, last_press_jiffies + msecs_to_jiffies(button_debounce_ms))) {
-+                dev_info(hda_codec_dev(codec),
-+                         "cs_8409_headset_button_event - 0x%08x debounced\n", buttons);
-+                return;
++        // Volume: held down from its press bit until the release interrupt, so
++        // holding the button repeats like a held key instead of stepping once.
++        if (buttons & (BUTTON_DOWN_PRESS | BUTTON_UP_PRESS)) {
++                btn = (buttons & BUTTON_DOWN_PRESS) ? SND_JACK_BTN_3 : SND_JACK_BTN_2;
++
++                // swallow a second press this soon after the last one: guards
++                // against one physical press being reported twice
++                if (button_debounce_ms > 0 && last_press_jiffies &&
++                    time_before(jiffies, last_press_jiffies + msecs_to_jiffies(button_debounce_ms))) {
++                        dev_info(hda_codec_dev(codec),
++                                 "cs_8409_headset_button_event - 0x%08x debounced\n", buttons);
++                        goto out;
++                }
++                last_press_jiffies = jiffies;
++
++                cancel_delayed_work(&spec->button_release_work);
++                cs_8409_headset_button_release_locked(codec);
++                dev_info(hda_codec_dev(codec), "cs_8409_headset_button_event - 0x%08x -> %s down\n",
++                         buttons, btn == SND_JACK_BTN_3 ? "VOLUMEDOWN" : "VOLUMEUP");
++                spec->held_button = btn;
++                cs_8409_headset_button_report(codec, btn);
++                if (buttons & BUTTON_RELEASE)   // press and release drained together
++                        cs_8409_headset_button_release_locked(codec);
++                else if (button_max_hold_ms > 0)
++                        schedule_delayed_work(&spec->button_release_work,
++                                              msecs_to_jiffies(button_max_hold_ms));
++                goto out;
 +        }
-+        last_press_jiffies = jiffies;
 +
-+        dev_info(hda_codec_dev(codec),
-+                 "cs_8409_headset_button_event - 0x%08x -> %s\n", buttons, keyname);
-+
-+        snd_hda_jack_set_button_state(codec, CS8409_CS42L83_HP_MIC_PIN_NID, btn);
-+        snd_hda_jack_report_sync(codec);
-+        snd_hda_jack_set_button_state(codec, CS8409_CS42L83_HP_MIC_PIN_NID, 0);
-+        snd_hda_jack_report_sync(codec);
++        if (buttons & BUTTON_RELEASE) {
++                cancel_delayed_work(&spec->button_release_work);
++                if (spec->held_button)
++                        dev_info(hda_codec_dev(codec), "cs_8409_headset_button_event - 0x%08x -> up\n", buttons);
++                cs_8409_headset_button_release_locked(codec);
++        }
++out:
++        mutex_unlock(&spec->button_lock);
  }
  
  
-@@ -5367,21 +5595,6 @@ static void cs_8409_headset_mike_streaming_preplay(struct hda_codec *codec, int
+@@ -5367,21 +5724,6 @@ static void cs_8409_headset_mike_streaming_preplay(struct hda_codec *codec, int
  
  }
  
@@ -1000,7 +1181,17 @@ index 76de5e8..1e4190d 100644
  static void cs_8409_headset_plugin_preplay_unused1(struct hda_codec *codec)
  {
  
-@@ -5703,6 +5916,17 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
+@@ -5459,6 +5801,9 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
+ 
+         mycodec_info(codec, "cs_8409_unplug_handle_disconnect start\n");
+ 
++        // a volume key held as the headset comes out must not stay held
++        cs_8409_headset_button_release(codec);
++
+ 
+         cs42l83_plugin_interrupt_setup(codec);
+ 
+@@ -5703,6 +6048,17 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
  
          mycodec_info(codec, "cs_8409_unplug_handle_disconnect jack_present %d\n", spec->jack_present);
  
@@ -1018,7 +1209,7 @@ index 76de5e8..1e4190d 100644
          mycodec_info(codec, "cs_8409_unplug_handle_disconnect end\n");
  }
  
-@@ -6026,6 +6250,9 @@ static void cs_8409_enable_headset_mike_streaming(struct hda_codec *codec)
+@@ -6026,6 +6382,9 @@ static void cs_8409_enable_headset_mike_streaming(struct hda_codec *codec)
          // unmute audio input
          cs42l83_headset_mike_adc_unmutevol(codec, 1);
  
@@ -1152,7 +1343,7 @@ index 101f27c..5e90172 100644
  {
  
 diff --git i/patch_cs8409.h.diff w/patch_cs8409.h.diff
-index aa6e981..ddd3d7d 100644
+index aa6e981..85232f3 100644
 --- i/patch_cs8409.h.diff
 +++ w/patch_cs8409.h.diff
 @@ -425,7 +425,7 @@
@@ -1160,20 +1351,28 @@ index aa6e981..ddd3d7d 100644
   	unsigned int paged:1;
   	unsigned int last_page;
 -@@ -342,6 +368,129 @@
-+@@ -342,6 +368,150 @@
++@@ -342,6 +368,158 @@
   	unsigned int init_done:1;
   	unsigned int build_ctrl_done:1;
   
-@@ -500,6 +500,8 @@
+@@ -500,6 +500,16 @@
  +       // if headphone has buttons or not
  +       int have_buttons;
  +
-++       // headset remote button state - see the headset_buttons module parameter
+++       // headset remote: the volume key held down (a SND_JACK_BTN_*, 0 = none),
+++       // when the centre button went down (0 = not down, or its long press
+++       // already sent), the auto-release for a volume key whose release
+++       // interrupt never arrives, and the timer that sends the long press
+++       int held_button;
+++       unsigned long centre_down_jiffies;
+++       struct mutex button_lock;
+++       struct delayed_work button_release_work;
+++       struct delayed_work centre_long_work;
 ++
  +        // current stream channel count
  +        int stream_channels;
  +
-@@ -509,6 +511,25 @@
+@@ -509,6 +519,25 @@
  +       // set when capturing for plug/unplug events while capturing
  +       int capturing;
  +
