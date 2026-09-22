@@ -153,9 +153,26 @@ playback prepare path handles on its own.
    sent KEY_VOICECOMMAND at the threshold, with audio, capture and the
    jack-follow all still working across presses.
 
-Known remaining issue: a loud high-pitched artefact is audible on the headset
-output at the moment of plug-in. Not diagnosed. Most likely HSBIAS being
-asserted abruptly or the output SRC not locking cleanly.
+7. A recording must not power the earpieces.
+   With a headset mike, a capture that starts while nothing is playing still
+   runs the whole headphone setup (the ADC needs its clocks, PLL, serial port
+   and SRC). That setup also powered the headphone amp -- with slow-start off
+   and no playback stream behind it -- and un-muted it, which put a chirp into
+   the earpieces (they share the mike's ground) and a full-scale spike into the
+   recording. Now those two steps are held back while only capturing and done
+   when playback actually starts (cs_8409_headset_hp_release). Module parameter
+   hp_hold_on_capture (default Y) turns it off.
+
+Known remaining issues:
+- A burst is still recorded in the first ~0.3 s when the capture starts with
+  the codec cold (both mike and output suspended): measured peaks of 9835 to
+  32767 on four cold starts, versus a clean start whenever the codec is warm.
+  It comes from the CS42L83 itself powering up, not the headphone amp. Next
+  candidates: mute the ADC for the first few hundred milliseconds of each
+  capture, or keep the codec powered while a headset is plugged in.
+- A loud high-pitched artefact is audible on the headset output at the moment
+  of plug-in. Not diagnosed. Most likely HSBIAS being asserted abruptly or the
+  output SRC not locking cleanly.
 
 diff --git i/patch_cirrus/cirrus_apple.h w/patch_cirrus/cirrus_apple.h
 index 7e9bcd1..757e3b0 100644
@@ -458,7 +475,7 @@ index 7e9bcd1..757e3b0 100644
          spec->headset_capture_format_setup_needed = 1;
  
 diff --git i/patch_cirrus/patch_cirrus_new84.h w/patch_cirrus/patch_cirrus_new84.h
-index a40a6f5..777a9d7 100644
+index a40a6f5..8c738aa 100644
 --- i/patch_cirrus/patch_cirrus_new84.h
 +++ w/patch_cirrus/patch_cirrus_new84.h
 @@ -1007,6 +1007,114 @@ static void switch_input_src(struct hda_codec *codec)
@@ -584,7 +601,23 @@ index a40a6f5..777a9d7 100644
  }
  
  
-@@ -1660,6 +1767,10 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
+@@ -1599,9 +1706,15 @@ static void cs_8409_pcm_playback_pre_prepare_hook(struct hda_pcm_stream *hinfo,
+ 					// so here we would switch between doing a full setup or a partial setup
+ 					if (spec->headset_play_format_setup_needed)
+ 					{
++						spec->headset_hp_held = 0;
+ 						cs_8409_headplay_setup(codec);
+ 						spec->headset_play_format_setup_needed = 0;
+ 					}
++					else
++					{
++						// a capture set the headset up with the amp held
++						cs_8409_headset_hp_release(codec);
++					}
+ 					// we only setup capturing if we are actually doing capturing
+ 					//if (spec->headset_capture_format_setup_needed)
+ 					//{
+@@ -1660,6 +1773,10 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
  
  	struct cs8409_apple_spec *spec = codec->spec;
  
@@ -595,7 +628,7 @@ index a40a6f5..777a9d7 100644
  	// so finally getting a handle on ordering here
  	// we need to do the OSX setup in the OPEN section
  	// as the generic hda format and stream setup is done BEFORE the PREPARE hook
-@@ -1746,6 +1857,9 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
+@@ -1746,6 +1863,9 @@ static void cs_8409_playback_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_c
  		myprintk("snd_hda_intel: command cs_8409_playback_pcm_hook close end");
  	}
  
@@ -605,7 +638,21 @@ index a40a6f5..777a9d7 100644
  }
  
  
-@@ -1804,8 +1918,12 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
+@@ -1792,9 +1912,12 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
+ 				if (spec->have_mike)
+ 				{
+ 					// so it seems if we have a headset mike we always enable the
+-					// headphones even if just capturing
++					// headphones even if just capturing -- but with nothing
++					// playing, keep the headphone amp off and muted until
++					// playback starts (see hp_hold_on_capture)
+ 					if (spec->headset_play_format_setup_needed)
+ 					{
++						spec->headset_hp_held = hp_hold_on_capture && !spec->playing;
+ 						cs_8409_headplay_setup(codec);
+ 						spec->headset_play_format_setup_needed = 0;
+ 					}
+@@ -1804,8 +1927,12 @@ static void cs_8409_pcm_capture_pre_prepare_hook(struct hda_pcm_stream *hinfo, s
  						spec->headset_capture_format_setup_needed = 0;
  					}
  				}
@@ -620,7 +667,7 @@ index a40a6f5..777a9d7 100644
  				// NOTE - still not fixed linein/lineout working - this may need
  				// changing here
  			}
-@@ -1861,6 +1979,10 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
+@@ -1861,6 +1988,10 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
  
          spec = codec->spec;
  
@@ -631,7 +678,7 @@ index a40a6f5..777a9d7 100644
  
  	// so now no setup is done here - we only check for unsolicited responses
  	// - we do do cleanup for the CLEANUP action
-@@ -1927,6 +2049,8 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
+@@ -1927,6 +2058,8 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
  		spec->capture_init_count = 0;
  		// not sure of this position yet
  		spec->capturing = 0;
@@ -640,7 +687,7 @@ index a40a6f5..777a9d7 100644
  		power_chk = snd_hda_codec_read(codec, codec->core.afg, 0, AC_VERB_GET_POWER_STATE, 0);
  		myprintk("snd_hda_intel: command cs_8409_capture_pcm_hook power check 0x01 4 %d", power_chk);
  		myprintk("snd_hda_intel: command cs_8409_capture_pcm_hook HOOK CLEANUP end");
-@@ -1935,6 +2059,9 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
+@@ -1935,6 +2068,9 @@ static void cs_8409_capture_pcm_hook(struct hda_pcm_stream *hinfo, struct hda_co
  		myprintk("snd_hda_intel: command cs_8409_capture_pcm_hook close end");
  	}
  
@@ -651,7 +698,7 @@ index a40a6f5..777a9d7 100644
  
  
 diff --git i/patch_cirrus/patch_cirrus_real84.h w/patch_cirrus/patch_cirrus_real84.h
-index 76de5e8..a35551e 100644
+index 76de5e8..a6e5e67 100644
 --- i/patch_cirrus/patch_cirrus_real84.h
 +++ w/patch_cirrus/patch_cirrus_real84.h
 @@ -282,13 +282,100 @@ static void cs_8409_linein_volume_setup_new(struct hda_codec *codec, int volume)
@@ -899,7 +946,18 @@ index 76de5e8..a35551e 100644
          codec_info(codec, "cs_8409_read_status_and_clear_interrupt 0x%08x end\n",retint);
  
          return retint;
-@@ -4733,7 +4875,6 @@ static void cs42l83_headset_play_setup_on(struct hda_codec *codec);
+@@ -3860,7 +4002,9 @@ static void cs42l83_set_power_state_on(struct hda_codec *codec, int instate)
+                 //cs_8409_vendor_i2cWrite(codec, 0x90, 0x1101, 0x0096, 1); // snd_hda
+ 
+                 // this converts 0x9e to 0x96
+-                cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x1101, 0x08, 0x0, 1); // snd_hda
++                // headphone amp power-up, held back while only capturing
++                if (!((struct cs8409_apple_spec *)codec->spec)->headset_hp_held)
++                        cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x1101, 0x08, 0x0, 1); // snd_hda
+ 
+         }
+ 
+@@ -4733,7 +4877,6 @@ static void cs42l83_headset_play_setup_on(struct hda_codec *codec);
  static void cs_8409_headset_streaming_preplay(struct hda_codec *codec);
  static void cs_8409_intmike_linein_disable(struct hda_codec *codec);
  static void cs_8409_headset_mike_streaming_preplay(struct hda_codec *codec, int nullformat);
@@ -907,7 +965,7 @@ index 76de5e8..a35551e 100644
  
  
  static void cs_8409_plugin_event_continued(struct hda_codec *codec)
-@@ -4837,7 +4978,7 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
+@@ -4837,7 +4980,7 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
                          {
                                  if (spec->capturing)
                                  {
@@ -916,7 +974,7 @@ index 76de5e8..a35551e 100644
                                  }
  
                                  // this is just calling this routine
-@@ -4867,10 +5008,27 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
+@@ -4867,10 +5010,27 @@ static void cs_8409_plugin_event_continued(struct hda_codec *codec)
                                  //spec->headset_presetup_done = 1;
  
  
@@ -945,7 +1003,7 @@ index 76de5e8..a35551e 100644
  
          }
          else
-@@ -5292,13 +5450,212 @@ static void cs_8409_headset_button_detect_event(struct hda_codec *codec)
+@@ -5292,13 +5452,212 @@ static void cs_8409_headset_button_detect_event(struct hda_codec *codec)
          if ((ret_mike & MIKE_CONNECT) != MIKE_CONNECT)
                  dev_err(hda_codec_dev(codec), "ERROR - has mike but mike not connected - not analyzed!!\n");
  
@@ -1159,7 +1217,7 @@ index 76de5e8..a35551e 100644
  }
  
  
-@@ -5367,21 +5724,6 @@ static void cs_8409_headset_mike_streaming_preplay(struct hda_codec *codec, int
+@@ -5367,21 +5726,6 @@ static void cs_8409_headset_mike_streaming_preplay(struct hda_codec *codec, int
  
  }
  
@@ -1181,7 +1239,7 @@ index 76de5e8..a35551e 100644
  static void cs_8409_headset_plugin_preplay_unused1(struct hda_codec *codec)
  {
  
-@@ -5459,6 +5801,9 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
+@@ -5459,6 +5803,9 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
  
          mycodec_info(codec, "cs_8409_unplug_handle_disconnect start\n");
  
@@ -1191,7 +1249,11 @@ index 76de5e8..a35551e 100644
  
          cs42l83_plugin_interrupt_setup(codec);
  
-@@ -5703,6 +6048,17 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
+@@ -5700,9 +6047,21 @@ static void cs_8409_unplug_handle_disconnect(struct hda_codec *codec)
+         spec->headset_capture_format_setup_needed = 1;
+ 
+         spec->headset_presetup_done = 0;
++        spec->headset_hp_held = 0;
  
          mycodec_info(codec, "cs_8409_unplug_handle_disconnect jack_present %d\n", spec->jack_present);
  
@@ -1209,7 +1271,44 @@ index 76de5e8..a35551e 100644
          mycodec_info(codec, "cs_8409_unplug_handle_disconnect end\n");
  }
  
-@@ -6026,6 +6382,9 @@ static void cs_8409_enable_headset_mike_streaming(struct hda_codec *codec)
+@@ -5861,6 +6220,28 @@ static void cs_8409_headset_streaming_preplay(struct hda_codec *codec)
+ }
+ 
+ 
++// A capture that starts while nothing plays still needs the full headset setup
++// (clocks, PLL, serial port, SRC, codec power) -- but powering the headphone
++// amp with slow-start off and un-muting it, with no playback stream behind it,
++// put a full-scale spike into the first 0.3 s of every such recording and a
++// chirp into the earpieces, which share the headset mic's ground. So hold those
++// two steps back until something actually plays.
++static bool hp_hold_on_capture = true;
++module_param(hp_hold_on_capture, bool, 0644);
++MODULE_PARM_DESC(hp_hold_on_capture, "keep the headset headphone amp off and muted while only capturing (default Y)");
++
++// playback is starting: power the held headphone amp and un-mute it
++static void cs_8409_headset_hp_release(struct hda_codec *codec)
++{
++        struct cs8409_apple_spec *spec = codec->spec;
++
++        if (!spec->headset_hp_held)
++                return;
++        spec->headset_hp_held = 0;
++        cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x1101, 0x08, 0x0, 1);
++        cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x2001, 0x0c, 0x00, 1);
++}
++
+ static void cs_8409_enable_headset_streaming(struct hda_codec *codec)
+ {
+         //int retval;
+@@ -5889,6 +6270,7 @@ static void cs_8409_enable_headset_streaming(struct hda_codec *codec)
+ 
+ static void cs_8409_disable_headset_streaming(struct hda_codec *codec)
+ {
++        ((struct cs8409_apple_spec *)codec->spec)->headset_hp_held = 0;
+         //int retval;
+ 
+         mycodec_info(codec, "snd_hda_intel: cs_8409_disable_headset_streaming start\n");
+@@ -6026,6 +6408,9 @@ static void cs_8409_enable_headset_mike_streaming(struct hda_codec *codec)
          // unmute audio input
          cs42l83_headset_mike_adc_unmutevol(codec, 1);
  
@@ -1220,10 +1319,21 @@ index 76de5e8..a35551e 100644
          // for partial setup only
          //cs42l83_headset_mike_pin_enable(codec);
 diff --git i/patch_cirrus/patch_cirrus_real84_i2c.h w/patch_cirrus/patch_cirrus_real84_i2c.h
-index 101f27c..5e90172 100644
+index 101f27c..0b34b39 100644
 --- i/patch_cirrus/patch_cirrus_real84_i2c.h
 +++ w/patch_cirrus/patch_cirrus_real84_i2c.h
-@@ -1886,10 +1886,42 @@ static void cs42l83_configure_headset_button_interrupts(struct hda_codec *codec)
+@@ -1280,7 +1280,9 @@ static void cs42l83_headset_enable_on(struct hda_codec *codec)
+         //cs_8409_vendor_i2cRead(codec, 0x90, 0x2001, 1); // snd_hda
+         //cs_8409_vendor_i2cWrite(codec, 0x90, 0x2001, 0x0001, 1); // snd_hda
+ 
+-        cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x2001, 0x0c, 0x00, 1); // snd_hda
++        // headphone un-mute, held back while only capturing
++        if (!((struct cs8409_apple_spec *)codec->spec)->headset_hp_held)
++                cs_8409_vendor_i2cWriteMask(codec, 0x90, 0x2001, 0x0c, 0x00, 1); // snd_hda
+ 
+ }
+ 
+@@ -1886,10 +1888,42 @@ static void cs42l83_configure_headset_button_interrupts(struct hda_codec *codec)
  
          cs_8409_vendor_i2cRead(codec, 0x90, 0x1b7c, 1); // snd_hda
          cs_8409_vendor_i2cRead(codec, 0x90, 0x1b7a, 1); // snd_hda
@@ -1266,7 +1376,7 @@ index 101f27c..5e90172 100644
  static void cs42l83_enable_hsbias_auto_clamp_off2(struct hda_codec *codec)
  {
  
-@@ -1945,6 +1977,75 @@ static void cs42l83_hsbias_sense_on(struct hda_codec *codec)
+@@ -1945,6 +1979,75 @@ static void cs42l83_hsbias_sense_on(struct hda_codec *codec)
  }
  
  
@@ -1343,7 +1453,7 @@ index 101f27c..5e90172 100644
  {
  
 diff --git i/patch_cs8409.h.diff w/patch_cs8409.h.diff
-index aa6e981..85232f3 100644
+index aa6e981..386b88f 100644
 --- i/patch_cs8409.h.diff
 +++ w/patch_cs8409.h.diff
 @@ -425,7 +425,7 @@
@@ -1351,11 +1461,11 @@ index aa6e981..85232f3 100644
   	unsigned int paged:1;
   	unsigned int last_page;
 -@@ -342,6 +368,129 @@
-+@@ -342,6 +368,158 @@
++@@ -342,6 +368,162 @@
   	unsigned int init_done:1;
   	unsigned int build_ctrl_done:1;
   
-@@ -500,6 +500,16 @@
+@@ -500,6 +500,20 @@
  +       // if headphone has buttons or not
  +       int have_buttons;
  +
@@ -1369,10 +1479,14 @@ index aa6e981..85232f3 100644
 ++       struct delayed_work button_release_work;
 ++       struct delayed_work centre_long_work;
 ++
+++       // a capture started while nothing played ran the headphone setup with
+++       // the headphone amp held off and muted (cs_8409_headset_hp_release)
+++       int headset_hp_held;
+++
  +        // current stream channel count
  +        int stream_channels;
  +
-@@ -509,6 +519,25 @@
+@@ -509,6 +523,25 @@
  +       // set when capturing for plug/unplug events while capturing
  +       int capturing;
  +
