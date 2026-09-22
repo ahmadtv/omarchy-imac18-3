@@ -7,7 +7,7 @@
 ![hardware](https://img.shields.io/badge/hardware-iMac18,3-111?logo=apple&logoColor=white)
 ![display](https://img.shields.io/badge/display-5120×2880-e91e63)
 ![kernel](https://img.shields.io/badge/kernel-7.1–7.2.5-1f6feb?logo=linux&logoColor=white)
-![omarchy](https://img.shields.io/badge/Omarchy-4.0.4_in_testing-d29922)
+![omarchy](https://img.shields.io/badge/Omarchy-4.0.4_verified-2ea043)
 [![built for Omarchy](https://img.shields.io/badge/built_for-Omarchy-7c3aed?logo=archlinux&logoColor=white)](https://omarchy.org)
 ![reversible](https://img.shields.io/badge/every_change-reversible-2ea043)
 ![license](https://img.shields.io/badge/license-MIT-555)
@@ -26,22 +26,27 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ahmadtv/omarchy-imac18-3/mai
 
 > For the **2017 27-inch iMac (iMac18,3)**. Built and tested on Omarchy (Arch + Hyprland); the audio and colour pieces are largely distro-agnostic.
 
-> **Omarchy 4.0.4: boot-test in progress — read before rebooting.** 4.0.4 moves
-> you from Arch's `linux` to `linux-omarchy` 7.2.5, Omarchy's own *patched*
-> kernel, and makes it the first Limine entry (the old kernel stays as a
-> fallback). Two things are required on this iMac, or it hangs on a black
-> screen before the disk-password prompt:
+> **Verified on Omarchy 4.0.4 with `linux-omarchy` 7.2.5.** 4.0.4 moves you
+> from Arch's `linux` to `linux-omarchy`, Omarchy's own *patched* kernel, and
+> makes it the first Limine entry (the old kernel stays as a fallback). After
+> updating, and **before rebooting**, update this repo and run:
 >
-> 1. **Update this repo, then run `./scripts/imac-patcher --apply 5k` before
->    rebooting.** The 5K module must be built from linux-omarchy's own source;
->    the installer now reproduces it (kernel.org 7.2.5 + the omarchy-pkgs patch
->    set) and refuses to install if the headers differ from the kernel's.
->    Earlier copies built from plain 7.2.5 — that module loads and hangs the boot.
-> 2. **Add `intel_iommu=off`** to `KERNEL_CMDLINE[default]` in
->    `/etc/default/limine`. linux-omarchy turns the Intel IOMMU (VT-d) on by
->    default, which black-screens Intel Macs with AMD graphics
->    ([omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119)).
->    Arch's kernel already leaves it off; the Intel GPU is unaffected.
+> ```bash
+> ./scripts/imac-patcher --apply iommu 5k
+> ```
+>
+> * **iommu** adds `intel_iommu=off`. linux-omarchy turns the Intel IOMMU
+>   (VT-d) on by default, which black-screens this iMac before the password
+>   prompt, as on other Intel Macs with AMD graphics
+>   ([omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119)).
+>   Arch's kernel already leaves it off; the Intel GPU is unaffected.
+> * **5k** builds the 5K module from linux-omarchy's own source (kernel.org
+>   7.2.5 + the omarchy-pkgs patch set) and refuses to install if its headers
+>   differ from the kernel's. A module built from plain 7.2.5 loads, then hangs
+>   the boot. The audio driver is DKMS and rebuilds itself.
+>
+> `--status` warns about both whenever a new kernel is installed but not
+> prepared.
 
 ---
 
