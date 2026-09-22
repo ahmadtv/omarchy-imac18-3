@@ -144,20 +144,21 @@ Every patch backs up what it replaces and can be reversed. Boot-related changes 
 
 ## 📮 Upstream
 
-Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-09-12._
+Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-09-22._
 
 | Where | What | Status |
 |---|---|---|
-| [drm/amd#4455](https://gitlab.freedesktop.org/drm/amd/-/issues/4455) | Native 5K on iMacs (community thread): this project's genlock fix, the first verified iMac18,3, and a lean mainline candidate (kernel exposes two tiles, compositor stitches) | Open, under discussion; VCE fix and set_os findings shared 2026-09-12 |
+| [drm/amd#4455](https://gitlab.freedesktop.org/drm/amd/-/issues/4455) | Native 5K on iMacs (community thread): this project's genlock fix, the first verified iMac18,3, and a lean mainline candidate (kernel exposes two tiles, compositor stitches) | Open, under discussion; VCE fix and set_os findings shared 2026-09-12; reviewed taprobane99's slim 7.3 patch and warned about the `linux-omarchy` 7.2.5 pitfalls 2026-09-22 |
 | [drm/amd#5810](https://gitlab.freedesktop.org/drm/amd/-/issues/5810) | GPU reset after a VCE hang: two fixes (reset deadlock in `dm_suspend`, VCE suspend during reset), patches inline | Open, filed by us, waiting for AMD |
-| [drm/amd#5595](https://gitlab.freedesktop.org/drm/amd/-/issues/5595) | The VCE encoder hang itself (Polaris, since 7.1.6) | Fixed upstream (`2ee9836545e6`, 7.3); backported here until Arch's kernel has it |
+| [drm/amd#5595](https://gitlab.freedesktop.org/drm/amd/-/issues/5595) | The VCE encoder hang itself (Polaris, since 7.1.6) | Fixed upstream (`2ee9836545e6`, 7.3); not in 7.2.5 or 7.2.6, so still backported here |
 | [drm/i915#17042](https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/17042) | Hidden Intel HD 630 running headless: a quirk so i915 creates no outputs on iMacs, then the kernel's set_os list gains `iMac18,3` | Open, filed by us, no reply yet |
 | linux-efi (mailing list) | One line: add `iMac18,3` to `apple_match_product_name()` in `x86-stub.c` (the patcher applies the same change at build time) | Not sent; waits on #17042 |
-| [jackdanyell/imac18-3-cs8409-linux-audio#5](https://github.com/jackdanyell/imac18-3-cs8409-linux-audio/pull/5) | Headset mic, live jack switching, mic gains, EarPods remote buttons | Open PR |
+| [jackdanyell/imac18-3-cs8409-linux-audio#5](https://github.com/jackdanyell/imac18-3-cs8409-linux-audio/pull/5) | Headset mic, live jack switching, mic gains, EarPods remote buttons | Open PR; hold-to-repeat volume and the centre long press added 2026-09-22 after choyer's review |
 | [omacom/omarchy#10985](https://github.com/omacom/omarchy/pull/10985) | Omarchy's audio panel lists each jack's ports as rows, the way macOS and GNOME do | Open PR |
 | [omacom/omarchy#8792](https://github.com/omacom/omarchy/pull/8792) | Webcam overlay asks for MJPEG, so UVC cameras run at 30 fps instead of raw YUYV at 10 (our hardware numbers added) | Open PR (not ours); the `record` module's mpv profile goes once it lands |
 | [omacom/omarchy#11508](https://github.com/omacom/omarchy/issues/11508) | Stopping a screen recording twice posts two "saved" toasts and a broken thumbnail | Open, filed by us |
-| [omacom/omarchy#11509](https://github.com/omacom/omarchy/issues/11509) | Menu extensions: overriding an id resets its icon and label | Open, filed by us |
+| [omacom/omarchy#11509](https://github.com/omacom/omarchy/issues/11509) | Menu extensions: overriding an id resets its icon and label | Closed 2026-09-21 as a duplicate; the fix is in open PRs [#10007](https://github.com/omacom/omarchy/pull/10007) and [#12255](https://github.com/omacom/omarchy/pull/12255), after which the `record` module can stop copying whole rows |
+| [omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119) | `linux-omarchy` (Omarchy 4.0.4) turns the Intel IOMMU on by default, black-screening Intel Macs with AMD graphics | Open (not ours); the `iommu` module sets `intel_iommu=off` until it's fixed |
 | [omacom/omarchy#11464](https://github.com/omacom/omarchy/pull/11464) | Omarchy's Mac support page gains the 2017 iMac 5K: its known issues on stock Omarchy, and a link here | Open PR |
 | [lgse/strata#127](https://github.com/lgse/strata/issues/127) | GPU hang while Strata generated a video preview | Closed; the cause was the kernel VCE bug (#5595) |
 
