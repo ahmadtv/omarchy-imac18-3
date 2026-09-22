@@ -47,6 +47,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ahmadtv/omarchy-imac18-3/mai
 >
 > `--status` warns about both whenever a new kernel is installed but not
 > prepared.
+>
+> Once `linux-omarchy` boots fine, `sudo pacman -Rns linux linux-headers`
+> removes Arch's kernel and leaves a single boot entry again; the patcher
+> follows whichever kernel is installed.
 
 ---
 

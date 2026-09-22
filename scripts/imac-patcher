@@ -578,7 +578,7 @@ MACOS_HYPR="${HOME}/.config/hypr/imac-gpu.lua"
 MACOS_HYPR_MAIN="${HOME}/.config/hypr/hyprland.lua"
 mod_macos_title() { echo "macOS mode: Intel video + working brightness"; }
 mod_macos_tier()  { echo boot; }
-mod_macos_desc()  { echo "Makes the kernel tell the firmware it is starting macOS, as it already does for some MacBook Pros. That exposes the Intel HD 630, which then encodes and decodes video for every app that picks the first GPU (H.264 about 3.7x faster than the Radeon), and makes the brightness slider work -- over the panel's full range, starting at the saved level from power-on. The Radeon keeps the display and all 3D. Same single 'Omarchy > linux' boot entry, kept through kernel updates."; }
+mod_macos_desc()  { echo "Makes the kernel tell the firmware it is starting macOS, as it already does for some MacBook Pros. That exposes the Intel HD 630, which then encodes and decodes video for every app that picks the first GPU (H.264 about 3.7x faster than the Radeon), and makes the brightness slider work -- over the panel's full range, starting at the saved level from power-on. The Radeon keeps the display and all 3D. Same single Omarchy boot entry, kept through kernel updates."; }
 macos_uki_patched() { sudo grep -qa 'iMac18,3' "$UKI_PATH" 2>/dev/null; }
 # Status must not need sudo (the bar widget polls it). The UKI on the ESP is
 # root-only, so unless we are root the running boot is the evidence: the
@@ -897,7 +897,10 @@ LIMINE_SHADOW_CONFIGS=(
     /boot/boot/limine/limine.conf
     /boot/limine/limine.conf
 )
-UKI_PATH=/boot/EFI/Linux/omarchy_linux.efi
+# The UKI of the kernel we are targeting. Omarchy names it after the package:
+# omarchy_linux.efi for Arch's kernel, omarchy_linux-omarchy.efi for Omarchy's.
+uki_for() { local pb; pb="$(cat "/usr/lib/modules/$1/pkgbase" 2>/dev/null || echo linux)"; echo "/boot/EFI/Linux/omarchy_${pb}.efi"; }
+UKI_PATH="$(uki_for "$TARGET_KREL")"
 FALLBACK_PATH=/boot/EFI/BOOT/BOOTX64.EFI
 
 remove_shadow_configs() {
