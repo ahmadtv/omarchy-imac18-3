@@ -90,6 +90,12 @@ MODDIR="/usr/lib/modules/${KREL}/kernel/drivers/gpu/drm/amd/amdgpu"
 BUILDLINK="/usr/lib/modules/${KREL}/build"
 [[ -d "/usr/lib/modules/${KREL}/kernel" ]] \
 	|| die "kernel ${KREL} is not installed. Installed: $(installed_kernels | tr '\n' ' ')"
+# Which package the kernel comes from. linux-omarchy is not plain kernel.org
+# source: it carries its own patch set, and some of those patches change the
+# layout of core DRM structs amdgpu shares with the kernel. A module built from
+# plain source still loads (vermagic matches, MODVERSIONS is off) and then reads
+# those structs at the wrong offsets -- a silent hang before the LUKS prompt.
+PKGBASE="$(cat "/usr/lib/modules/${KREL}/pkgbase" 2>/dev/null || echo linux)"
 
 # ── restore mode ───────────────────────────────────────────────────────────
 find_amdgpu() { find "$(dirname "$MODDIR")" -maxdepth 2 -name 'amdgpu.ko*' ! -name '*.stock-backup' 2>/dev/null | head -1; }
@@ -136,14 +142,68 @@ STAMPDIR=".imac5k-applied"
 # stamped on it. Anything else (a different stack, a tree patched by hand, an
 # older script without stamps) is discarded and extracted fresh -- a minute,
 # versus a failed apply.
+# linux-omarchy: reproduce the package's own source -- kernel.org ${KVER} plus
+# the patch set at the omarchy-pkgs commit that built this exact pkgrel, applied
+# in PKGBUILD order with --fuzz=0 exactly as its prepare() does.
+OMARCHY_PKGS_REPO=https://github.com/omacom/omarchy-pkgs
+BASE_ID=""
+BASE_PATCHES=()
+prepare_base_patches() {
+	[[ $PKGBASE == linux-omarchy ]] || return 0
+	local rel="${KREL#"$KVER"-}"; rel="${rel%%-*}"          # 7.2.5-3-omarchy -> 3
+	local repo="$WORK/omarchy-pkgs" pb=pkgbuilds/linux-omarchy/PKGBUILD c="" x ver pr dir name built
+	# run git as the invoking user: the checkout lives in their cache, and a
+	# root-owned blobless clone cannot fetch blobs later for a normal user
+	local run=(); [[ $EUID -eq 0 && -n ${SUDO_USER:-} ]] && run=(sudo -u "$SUDO_USER")
+	local git=("${run[@]}" git -c safe.directory='*' -C "$repo")
+	if [[ -d $repo/.git ]]; then
+		"${git[@]}" fetch --quiet origin || die "could not update ${repo}"
+	else
+		"${run[@]}" mkdir -p "$WORK"
+		"${run[@]}" git clone --quiet --filter=blob:none "$OMARCHY_PKGS_REPO" "$repo" \
+			|| die "could not clone ${OMARCHY_PKGS_REPO}"
+	fi
+	# Several commits can carry the same pkgver/pkgrel: patches land first and
+	# the release number is bumped later. The installed package was built from
+	# the newest such commit that is not newer than its own build date.
+	built="$(LC_ALL=C pacman -Qi "$PKGBASE" 2>/dev/null | sed -n 's/^Build Date *: //p')"
+	built="$(date -d "$built" +%s 2>/dev/null || echo 0)"
+	(( built > 0 )) || die "cannot read ${PKGBASE}'s build date from pacman -- cannot pick its source revision"
+	while read -r x ct; do
+		(( ct <= built )) || continue
+		ver="$("${git[@]}" show "$x:$pb" | sed -n 's/^pkgver=//p')"
+		pr="$("${git[@]}" show "$x:$pb" | sed -n 's/^pkgrel=//p')"
+		if [[ $ver == "$KVER" && $pr == "$rel" ]]; then c="$x"; break; fi
+	done < <("${git[@]}" log --format='%H %ct' origin/HEAD -- "$pb")
+	[[ -n $c ]] || die "linux-omarchy ${KVER}-${rel} (built $(date -d "@$built" '+%F %T')) is not in ${OMARCHY_PKGS_REPO} -- cannot reproduce ${KREL}'s source. Nothing installed."
+	dir="$WORK/omarchy-patches-${c:0:12}"; mkdir -p "$dir"
+	while read -r name; do
+		if [[ ! -s $dir/${name%.zst} ]]; then
+			if [[ $name == *.zst ]]; then
+				"${git[@]}" show "$c:pkgbuilds/linux-omarchy/$name" | zstd -dcq > "$dir/${name%.zst}"
+			else
+				"${git[@]}" show "$c:pkgbuilds/linux-omarchy/$name" > "$dir/$name"
+			fi || die "could not read ${name} at omarchy-pkgs ${c:0:12}"
+		fi
+		BASE_PATCHES+=("$dir/${name%.zst}")
+	done < <("${git[@]}" show "$c:$pb" | awk '/^source=\(/{f=1;next} f&&/^\)/{exit} f' \
+		| sed 's/#.*//; s/{[^}]*}//g; s/[[:space:]]//g' | grep -E '\.patch(\.zst)?$')
+	(( ${#BASE_PATCHES[@]} )) || die "found no patches in linux-omarchy's PKGBUILD at ${c:0:12}"
+	BASE_ID="omarchy-pkgs.${c:0:12}"
+	say "${PKGBASE} ${KVER}-${rel}: source = kernel.org ${KVER} + omarchy-pkgs ${c:0:12} (${#BASE_PATCHES[@]} patches)"
+}
+prepare_base_patches
+
 expected_stamps() {
 	local f
 	for f in "$PATCH_FILE" "${EXTRA_PATCHES[@]}"; do
 		printf '%s.%s\n' "$(basename "$f")" "$(sha256sum "$f" | cut -c1-16)"
-	done | sort
-}
+	done
+	[[ -z $BASE_ID ]] || printf '%s\n' "$BASE_ID"
+} 
+sorted_expected_stamps() { expected_stamps | sort; }
 if [[ -d "$SRC" ]]; then
-	if [[ "$(ls "$SRC/$STAMPDIR" 2>/dev/null | sort)" != "$(expected_stamps)" ]]; then
+	if [[ "$(ls "$SRC/$STAMPDIR" 2>/dev/null | sort)" != "$(sorted_expected_stamps)" ]]; then
 		say "existing ${SRC} tree does not carry this patch set — extracting fresh"
 		rm -rf "$SRC"
 	fi
@@ -160,6 +220,14 @@ if [[ ! -d "$SRC" ]]; then
 	tar -xf "${SRC}.tar.xz"
 fi
 cd "$SRC"
+
+if [[ -n $BASE_ID && ! -e "$STAMPDIR/$BASE_ID" ]]; then
+	say "applying the ${PKGBASE} patch set under ours (${#BASE_PATCHES[@]} patches)"
+	for p in "${BASE_PATCHES[@]}"; do
+		patch -Np1 --fuzz=0 --quiet < "$p" || die "$(basename "$p") from ${BASE_ID} did not apply to ${KVER}. Nothing installed."
+	done
+	mkdir -p "$STAMPDIR"; touch "$STAMPDIR/$BASE_ID"
+fi
 
 # ── configure to match the target kernel exactly (vermagic + symbols) ──────
 say "configuring to match kernel ${KREL}"
@@ -206,6 +274,21 @@ apply_patch "$PATCH_FILE" "iMac 5K patch stack"
 for extra in "${EXTRA_PATCHES[@]}"; do
 	apply_patch "$extra" "$(basename "$extra")"
 done
+
+# ── the source must carry exactly the target kernel's headers ──────────────
+# vermagic only proves the version string matches. A kernel built from patched
+# source (linux-omarchy, or any distro kernel that changes include/) has other
+# struct layouts; a module compiled against different headers loads fine and
+# corrupts memory. Our own patches touch nothing under include/ or arch/.
+say "checking the source headers against ${KREL}'s installed headers"
+hdrdiff="$(for d in include arch/x86/include; do
+	diff -rq --exclude=generated --exclude=config "$d" "$BUILDLINK/$d"
+done 2>&1)" || true
+if [[ -n $hdrdiff ]]; then
+	printf '%s\n' "$hdrdiff" | head -12 >&2
+	die "${KREL} (${PKGBASE}) was built from source whose headers differ from ours ($(printf '%s\n' "$hdrdiff" | wc -l) files). A module built this way loads, then hangs the boot. Nothing installed."
+fi
+say "headers match ${KREL} exactly"
 
 # ── build just the amdgpu module ───────────────────────────────────────────
 say "preparing build (fast)"

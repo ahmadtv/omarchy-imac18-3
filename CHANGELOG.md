@@ -4,6 +4,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 
 ## 2026-09-22
 
+- **Correction for Omarchy 4.0.4 — the earlier "ready" note was wrong.** `linux-omarchy` is not plain 7.2.5: it carries 91 Omarchy patches, several of which change core DRM struct layouts. The 5K module was built from plain kernel.org source, loaded anyway (the version string matched), and hung the boot on a black screen before the LUKS prompt. The installer now rebuilds linux-omarchy's exact source (the omarchy-pkgs commit matching the installed package's build date) and refuses to build whenever the source headers differ from the kernel's own — which also protects any future distro kernel. Separately, linux-omarchy enables the Intel IOMMU by default, which black-screens this iMac: add `intel_iommu=off` (a no-op on Arch's kernel; the Intel GPU keeps working). Boot test on the hardware pending.
 - **Ready for Omarchy 4.0.4 and the `linux-omarchy` kernel (7.2.5).** 4.0.4 installs `linux-omarchy` 7.2.5, makes it the first Limine entry and keeps the old kernel as a fallback. The whole patch stack now applies to 7.2.5 with no fuzz: the 5K panel-quirk hunk was re-anchored above the PHY SSC case, because 7.2.5 adds an Apple Studio Display quirk exactly where ours used to attach. Nothing changes on 7.1–7.2.3. Remember the 5K module is built per kernel — re-run `--apply 5k` after updating, before rebooting.
 
 ## 2026-09-19
