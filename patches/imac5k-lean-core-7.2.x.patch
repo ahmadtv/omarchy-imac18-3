@@ -346,9 +346,9 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_
  static void apply_edid_quirks(struct dc_link *link, struct edid *edid,
  			      struct dc_edid_caps *edid_caps)
  {
-@@ -134,6 +165,31 @@
- 		drm_dbg_driver(dev, "Skip PHY SSC reduction on panel id %X\n", panel_id);
- 		link->wa_flags.skip_phy_ssc_reduction = true;
+@@ -129,6 +160,31 @@
+ 		drm_dbg_driver(dev, "Disabling VSC on monitor with panel id %X\n", panel_id);
+ 		edid_caps->panel_patch.disable_colorimetry = true;
  		break;
 +	/*
 +	 * Apple 27" 5K iMac internal panel (iMac15,1 / 17,1 / 18,3 / 19,1 / 20,x
@@ -375,9 +375,9 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_
 +		else if (link->connector_signal == SIGNAL_TYPE_DISPLAY_PORT)
 +			edid_caps->panel_patch.apple_tiled_slave = 1;
 +		break;
- 	default:
- 		return;
- 	}
+ 	/* Workaround for monitors that get corrupted by the PHY SSC reduction */
+ 	case drm_edid_encode_panel_id('D', 'E', 'L', 0x4147):
+ 		drm_dbg_driver(dev, "Skip PHY SSC reduction on panel id %X\n", panel_id);
 @@ -196,6 +252,7 @@
  	}
  
