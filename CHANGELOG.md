@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-23
+
+- **5K comes up more reliably on a cold boot.** The driver asks the panel's second tile whether it has woken; it now asks up to 20 times instead of 3 (and 5 instead of 1 in one spot), about a millisecond apart. On a tile that answers immediately nothing changes. Contributed by @netzton, who saw roughly every second or third cold boot fail to bring up the tile on two iMac18,3 machines, and none in at least 8 cold boots after the change (#8). Takes effect the next time the 5K module is built.
+
 ## 2026-09-22
 
 - **EarPods: starting a recording no longer powers the earpieces.** With nothing playing, a recording started through the EarPods mic used to power up and un-mute the headphone amp too, which sent a chirp into your ears and a full-scale spike into the recording. That step now waits until something actually plays. A shorter burst is still recorded in the first ~0.3 s when the audio chip starts from cold (for example a voice note after the Mac has been quiet for a while); that part is still open. The `hp_hold_on_capture` module parameter turns the new behaviour off.
