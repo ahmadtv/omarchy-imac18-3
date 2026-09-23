@@ -43,6 +43,8 @@ stitches them (Mutter today; KWin in progress). Tested on iMac18,3
 (Radeon Pro 575 / POLARIS10 / DCE 11.2): native 5120x2880, both tiles HBR2x4,
 sync_enabled=1, seamless under motion. Also builds against 7.1.x.
 
+Update: bumped the `link_apple_5k_slave_aux_ready()` retry counts (1->5 for the link-training write retry, 3->20 for the two remaining call sites) after observing intermittent cold-boot AUX-wake failures — roughly every 2nd-3rd cold boot — on an iMac18,3 (Radeon Pro 575) running kernel 7.0.0-31-generic under Zorin OS. The helper returns immediately for non-Apple-tile displays and each attempt costs roughly 1ms, so the higher ceiling only affects worst-case wake time on the affected tile. At least 8 consecutive cold boots since with zero failures.
+
 This is a lean rework of the community patch series (mcirsta/linux-imac-5k,
 ported by taprobane99): all bring-up instrumentation/logging removed, the
 dead plumbing that only fed it stripped, and the no-op refactor of
@@ -707,7 +709,7 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/dc/link/protocols/li
  
  void dpcd_set_source_specific_data(struct dc_link *link)
  {
-+	if (!link_apple_5k_slave_aux_ready(link, 3))
++	if (!link_apple_5k_slave_aux_ready(link, 20))
 +		return;
 +
  	if (!link->dc->vendor_signature.is_valid) {
@@ -813,7 +815,7 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/dc/link/protocols/li
 +	unsigned int i;
 +
 +	for (i = 0; status != DC_OK && i < 4 && dc_link_is_apple_tiled_slave(link); i++) {
-+		link_apple_5k_slave_aux_ready(link, 1);
++		link_apple_5k_slave_aux_ready(link, 5);
 +		status = core_link_write_dpcd(link, addr, data, size);
 +	}
 +	return status;
@@ -863,7 +865,7 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/dc/link/protocols/li
  			msleep(delay_dp_power_up_in_ms);
  		}
  
-+		if (!link_apple_5k_slave_aux_ready(link, 3)) {
++		if (!link_apple_5k_slave_aux_ready(link, 20)) {
 +			DC_LOG_WARNING("%s: DP link(%d) sink AUX not ready for training\n",
 +				       __func__, link->link_index);
 +			status = LINK_TRAINING_ABORT;
