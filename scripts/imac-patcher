@@ -50,7 +50,7 @@ mkdir -p "$LOGDIR" "$CACHE"
 # they are the same on every machine. Those belong in a separate tweaks tool, which
 # brings its own tool and its own bar widget. This is a one-time run per
 # machine, so it stays a terminal thing.
-MODULES=(audio color vram record autobright suspend gpureset boot iommu 5k macos)
+MODULES=(audio color vram record autobright suspend gpureset boot 5k macos)
 # Retired: wifi (the Broadcom handshake fix) -- Omarchy ships it for every Mac
 # since omacom/omarchy#6652, in the same /etc/modprobe.d/brcmfmac.conf.
 
@@ -678,37 +678,6 @@ mod_suspend_remove() { sudo systemctl unmask "${SLEEP_TARGETS[@]}"; warn "sleep 
 HYGIENE_HOOK=/etc/boot/hooks/post.d/95-limine-esp-hygiene
 LIMINE_PKG_EFI=/usr/share/limine/BOOTX64.EFI
 
-# ═══════════════════════ module: iommu ═════════════════════════════════════
-# linux-omarchy (Omarchy 4.0.4 and later) is built with
-# CONFIG_INTEL_IOMMU_DEFAULT_ON=y; Arch's linux is not. With VT-d DMA remapping
-# on, this iMac's Radeon, NVMe and keyboard lose DMA early in boot: a black
-# screen and no LUKS prompt, stock amdgpu or ours. Other Intel Macs with AMD
-# graphics hit the same (omacom/omarchy#12119). intel_iommu=off restores Arch's
-# default. It does not touch the Intel iGPU -- the IOMMU is a different device.
-IOMMU_OFF='intel_iommu=off'
-omarchy_kernel_installed() { grep -qx 'linux-omarchy' /usr/lib/modules/*/pkgbase 2>/dev/null; }
-mod_iommu_title() { echo "Omarchy kernel boots (Intel IOMMU off)"; }
-mod_iommu_tier()  { echo boot; }
-mod_iommu_desc()  { echo "Omarchy's own kernel (linux-omarchy, from Omarchy 4.0.4) turns the Intel IOMMU on by default, and on this iMac that stops the Radeon, the disk and the keyboard early in boot: a black screen before the password prompt. Adds intel_iommu=off, which is what Arch's kernel already does. The Intel GPU keeps working -- the IOMMU is a separate part of the chip."; }
-mod_iommu_detect() {
-    if grep -q "$IOMMU_OFF" "$LIMINE_DEFAULT" 2>/dev/null; then echo applied
-    elif omarchy_kernel_installed; then echo not-applied
-    else echo n/a; fi
-}
-mod_iommu_apply() {
-    grep -q "$IOMMU_OFF" "$LIMINE_DEFAULT" 2>/dev/null && { say "${IOMMU_OFF} is already set"; return 0; }
-    confirm "Add ${IOMMU_OFF} to the kernel command line?" || return 1
-    sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-iommu-$(date +%s)"
-    sudo sed -i -E "s|^(KERNEL_CMDLINE\[default\]=\".*)\"$|\1 ${IOMMU_OFF}\"|" "$LIMINE_DEFAULT"
-    grep -q "$IOMMU_OFF" "$LIMINE_DEFAULT" || { warn "could not add it to KERNEL_CMDLINE[default] in ${LIMINE_DEFAULT}"; return 1; }
-    sync_boot_files && verify_cmdline "$IOMMU_OFF"
-}
-mod_iommu_remove() {
-    grep -q "$IOMMU_OFF" "$LIMINE_DEFAULT" 2>/dev/null || return 0
-    sudo sed -i "s| ${IOMMU_OFF}||" "$LIMINE_DEFAULT"
-    sync_boot_files
-}
-
 mod_boot_title() { echo "Boot config hygiene"; }
 mod_boot_tier()  { echo boot; }
 mod_boot_desc()  { echo "Repairs two ways the boot menu goes wrong on this machine: stray limine.conf copies that silently override the real one (so new snapshots never appear), and a UKI copied over the EFI fallback (so that boot route shows no menu at all). Installs a hook that keeps it that way."; }
@@ -960,13 +929,12 @@ kernel_banner() {
     local gaps=()
     amdgpu_patched_for "$TARGET_KREL"      || gaps+=(5k)
     audio_installed_is_ours "$TARGET_KREL" || gaps+=(audio)
-    [[ $(mod_iommu_detect) == not-applied ]] && gaps+=(iommu)
     warn "kernel ${TARGET_KREL} is installed; you are running ${KREL}. A reboot is pending."
     if (( ${#gaps[@]} )); then
         warn "not built for it yet: ${gaps[*]} — apply these BEFORE you reboot:"
         printf '     %s --apply %s\n' "$0" "${gaps[*]}"
     else
-        say "5K, audio and the boot settings are ready for ${TARGET_KREL} — safe to reboot."
+        say "5K and audio are already built for ${TARGET_KREL} — safe to reboot."
     fi
     echo
 }

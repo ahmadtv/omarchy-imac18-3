@@ -32,21 +32,23 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ahmadtv/omarchy-imac18-3/mai
 > updating, and **before rebooting**, update this repo and run:
 >
 > ```bash
-> ./scripts/imac-patcher --apply iommu 5k
+> ./scripts/imac-patcher --apply 5k
 > ```
 >
-> * **iommu** adds `intel_iommu=off`. linux-omarchy turns the Intel IOMMU
->   (VT-d) on by default, which black-screens this iMac before the password
->   prompt, as on other Intel Macs with AMD graphics
->   ([omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119)).
->   Arch's kernel already leaves it off; the Intel GPU is unaffected.
-> * **5k** builds the 5K module from linux-omarchy's own source (kernel.org
->   7.2.5 + the omarchy-pkgs patch set) and refuses to install if its headers
->   differ from the kernel's. A module built from plain 7.2.5 loads, then hangs
->   the boot. The audio driver is DKMS and rebuilds itself.
+> The 5K module must be built from linux-omarchy's own source (kernel.org
+> 7.2.5 plus the omarchy-pkgs patch set); the patcher does that and refuses to
+> install if the source headers differ from the kernel's. A module built from
+> plain 7.2.5 still loads — the version string matches — and then hangs the
+> boot on a black screen before the password prompt. The audio driver is DKMS
+> and rebuilds itself. `--status` says whether both are ready for a newly
+> installed kernel.
 >
-> `--status` warns about both whenever a new kernel is installed but not
-> prepared.
+> **If a kernel black-screens anyway**, `intel_iommu=off` is worth trying:
+> linux-omarchy turns the Intel IOMMU (VT-d) on by default where Arch leaves
+> it off, and that stops several machines from booting
+> ([omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119)).
+> It is **not** needed on this iMac: with a correctly built 5K module, the
+> IOMMU runs on 7.2.5 with no DMA faults, 5K, sound and brightness all fine.
 >
 > Once `linux-omarchy` boots fine, `sudo pacman -Rns linux linux-headers`
 > removes Arch's kernel and leaves a single boot entry again; the patcher
@@ -112,7 +114,6 @@ The patcher shows what's applied, what isn't, and lets you pick — **nothing is
 ./scripts/imac-patcher --apply record  # Omarchy's screen recordings at 1080p, full speed (the Radeon encodes 4K at ~29 fps)
 ./scripts/imac-patcher --apply autobright  # brightness follows the room's light; learns from your own adjustments (wluma)
 ./scripts/imac-patcher --apply macos   # Intel iGPU for video + working, full-range brightness (kernel tells the firmware it's macOS)
-./scripts/imac-patcher --apply iommu   # intel_iommu=off, needed by Omarchy's own kernel (see above)
 ./scripts/imac-patcher --remove 5k     # full undo, any time
 ```
 
@@ -165,7 +166,7 @@ Everything here that belongs in the kernel, the audio driver or Omarchy itself, 
 | [omacom/omarchy#8792](https://github.com/omacom/omarchy/pull/8792) | Webcam overlay asks for MJPEG, so UVC cameras run at 30 fps instead of raw YUYV at 10 (our hardware numbers added) | Open PR (not ours); the `record` module's mpv profile goes once it lands |
 | [omacom/omarchy#11508](https://github.com/omacom/omarchy/issues/11508) | Stopping a screen recording twice posts two "saved" toasts and a broken thumbnail | Open, filed by us |
 | [omacom/omarchy#11509](https://github.com/omacom/omarchy/issues/11509) | Menu extensions: overriding an id resets its icon and label | Closed 2026-09-21 as a duplicate; the fix is in open PRs [#10007](https://github.com/omacom/omarchy/pull/10007) and [#12255](https://github.com/omacom/omarchy/pull/12255), after which the `record` module can stop copying whole rows |
-| [omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119) | `linux-omarchy` (Omarchy 4.0.4) turns the Intel IOMMU on by default, black-screening Intel Macs with AMD graphics | Open (not ours); our iMac18,3 case added 2026-09-22; the `iommu` module sets `intel_iommu=off` until it's fixed |
+| [omacom/omarchy#12119](https://github.com/omacom/omarchy/issues/12119) | `linux-omarchy` (Omarchy 4.0.4) turns the Intel IOMMU on by default, black-screening Intel Macs with AMD graphics | Open (not ours); our iMac18,3 case added 2026-09-22 and corrected 2026-09-23 — with a correctly built module this iMac boots with the IOMMU on, so the fault is elsewhere |
 | [omacom/omarchy#11464](https://github.com/omacom/omarchy/pull/11464) | Omarchy's Mac support page gains the 2017 iMac 5K: its known issues on stock Omarchy, and a link here | Open PR |
 | [lgse/strata#127](https://github.com/lgse/strata/issues/127) | GPU hang while Strata generated a video preview | Closed; the cause was the kernel VCE bug (#5595) |
 
