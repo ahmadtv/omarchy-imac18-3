@@ -114,8 +114,11 @@ Each stage was its own non-default Limine entry until the promotion (stage 3); t
    `brightness` 0-65535, max 500 nits; DarwinDumped iMac18,3), while the firmware's ACPI `_BCL`
    stops at level 80 and `BSET` sends 655*level -- Linux's 100% was 80% (~400 nits), the same
    'Boot Camp is dimmer' gap owners report. `linux-side/acpi/make-bcl100` rewrites only `ABCL`
-   to levels 4..100 from the machine's own table (acpi_override hook; Apple's table is not in
-   this repo). The brightness jump mid-splash is systemd-backlight restoring after the root is
+   to levels 1..100 from the machine's own table (acpi_override hook; Apple's table is not in
+   this repo). It started at level 4 until 2026-09-24, on an assumed minimum that turned out to
+   have no source behind it: stepping the panel through levels 1-5 showed 1 (655 raw, 1% duty)
+   lights it normally, so the table now starts where the firmware's scale does. `IMAC_BCL_FLOOR`
+   builds a higher floor for anyone who wants one. The brightness jump mid-splash is systemd-backlight restoring after the root is
    unlocked; the firmware lights the panel from NVRAM `backlight-level` (u16 LE, same scale,
    currently 0xFFFF), which macOS keeps current. `linux-side/bin/imac-backlight-nvram` +
    `systemd/imac-backlight-nvram.service` write it at shutdown, only when it changed (the

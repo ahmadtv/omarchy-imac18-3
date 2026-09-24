@@ -6,11 +6,19 @@
 # lists levels 1..80, while its own setter BSET(level) scales 655*level onto the
 # backlight controller's 0..0xFFFF range -- so Linux's 100% is BSET(80) = 52400,
 # 80% of what macOS drives (macOS: 0..65535, 500 nits). This reads the machine's
-# own table, rewrites only ABCL to levels 4..100 (below 4 is under macOS's usable
-# floor, ~2176 raw), bumps the OEM revision so the kernel prefers the upgrade,
+# own table, rewrites only ABCL to levels 1..100, bumps the OEM revision so the
+# kernel prefers the upgrade,
 # and compiles it for mkinitcpio's acpi_override hook. Apple's table never
 # leaves the machine. Needs root and iasl (acpica).
 #   sudo igpu/linux-side/acpi/make-bcl100 [out.aml]
+#
+# The table starts at level 1 (BSET writes 655 of 65535, 1% duty). Earlier
+# versions started at 4, on the unfounded assumption that macOS would not go
+# below ~2176 raw; measured on the panel 2026-09-24, levels 1-3 light it
+# normally and level 2 is comfortably readable in a dark room, so there is no
+# floor to enforce. Set IMAC_BCL_FLOOR=<1..50> to build a table with a higher
+# one; rerunning it on a machine already booted with an upgraded table rebuilds
+# from that table.
 set -euo pipefail
 # Name after kernel/firmware/acpi/ must stay under 18 bytes (lib/earlycpio.c MAX_CPIO_FILE_NAME).
 OUT=${1:-/etc/initcpio/acpi_override/imac-bcl100.aml}
@@ -26,10 +34,16 @@ assert n == 1, "DefinitionBlock header not found"
 m = re.search(r'(Method \(ABCL, 0, NotSerialized\)\s*\{\s*Return \(Package \()0x[0-9A-F]+(\)\s*\{)(.*?)(\}\))', s, re.S)
 assert m, "ABCL not found"
 old = [v.strip() for v in m.group(3).replace('\n', ' ').split(',') if v.strip()]
-if old[0] == '0x64' and len(old) == 2 + 97:
-    sys.exit(3)          # this boot already runs the upgraded table
-assert old[0] == '0x50' and len(old) == 0x52, "unexpected ABCL: a different firmware?"
-levels = list(range(4, 101))
+import os
+floor = int(os.environ.get('IMAC_BCL_FLOOR', '1'))
+assert 1 <= floor <= 50, "IMAC_BCL_FLOOR must be between 1 and 50"
+if old[0] == '0x64' and len(old) >= 3 and int(old[-1], 16) == 100:
+    # this boot already runs an upgraded table: rebuild it with the wanted floor
+    if int(old[2], 16) == floor:
+        sys.exit(3)      # already exactly what was asked for
+else:
+    assert old[0] == '0x50' and len(old) == 0x52, "unexpected ABCL: a different firmware?"
+levels = list(range(floor, 101))
 body = ",\n                    ".join(['0x64', '0x32'] + ['0x%02X' % i for i in levels])
 s = s[:m.start()] + m.group(1) + '0x%02X' % (2 + len(levels)) + m.group(2) + '\n                    ' + body + '\n                ' + m.group(4) + s[m.end():]
 open(p, 'w').write(s)
@@ -40,4 +54,4 @@ if ((rc == 3)); then
 fi
 ((rc == 0)) || exit "$rc"
 iasl -p out "${T%.dat}.dsl" >iasl.log 2>&1 || { grep -E "^Error" iasl.log; exit 1; }
-install -Dm644 out.aml "$OUT"; echo "wrote $OUT ($(stat -c %s "$OUT") bytes): ABCL levels 4..100"
+install -Dm644 out.aml "$OUT"; echo "wrote $OUT ($(stat -c %s "$OUT") bytes): ABCL levels ${IMAC_BCL_FLOOR:-1}..100"

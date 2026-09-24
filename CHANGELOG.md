@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-24
+
+- **The brightness table now starts at level 1, and boot brightness is saved again.** The full-range ACPI table (`make-bcl100`) began at level 4, on my own assumption that macOS would not drive the backlight below about 2176 of 65535 -- a number nothing in Apple's firmware or tables actually says. Measured on the panel instead: levels 1-3 light it normally, and level 2 is readable in a dark room, so the table now runs 1..100 like the controller's own scale. You get three more steps at the bottom; `IMAC_BCL_FLOOR=<n>` builds a higher floor if you want one. Same pass fixes `imac-backlight-nvram`, which recognised the old 97-level table by `max_brightness == 96` and silently saved nothing once the table grew -- it now handles both, and clamps only to the controller's range. Rebuild the table and the UKI to pick it up.
+
 ## 2026-09-23
 
 - **Correction: the Intel IOMMU was never the problem here, and the `iommu` module is gone.** Yesterday's black screen on `linux-omarchy` had two suspects and I blamed both: a 5K module built from the wrong source, and the IOMMU that Omarchy's kernel switches on. Testing them apart on a separate boot entry settles it — with a correctly built module this iMac boots with `intel_iommu=on`: IOMMU enabled with 19 groups, zero DMA faults, 5120x2880, sound, the Intel GPU and brightness all fine. So the module that forced `intel_iommu=off` is removed rather than shipped as a needless kernel parameter; the README keeps it as the first thing to try if some future kernel black-screens, since other machines in omacom/omarchy#12119 genuinely are affected.
