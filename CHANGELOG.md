@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-25
+
+- **The top brightness step now reaches the panel's true maximum.** Level 100 made the firmware write 65500 of 65535; the firmware clamps anything above 100 to 65535, so the table gains a final step, 101, that is exactly what macOS drives at full brightness. The difference is 0.05%, invisible in practice; it just makes 100% mean 100%. The desktop still shows 100 at the top: `max_brightness` becomes 100, so the percentage Omarchy shows now equals the sysfs position exactly. `imac-backlight-nvram` knows the new table, so boot brightness keeps being saved. Rebuild the table and the UKI to pick it up.
+
 ## 2026-09-24
 
 - **The brightness table now starts at level 1, and boot brightness is saved again.** The full-range ACPI table (`make-bcl100`) began at level 4, on my own assumption that macOS would not drive the backlight below about 2176 of 65535 -- a number nothing in Apple's firmware or tables actually says. Measured on the panel instead: levels 1-3 light it normally, and level 2 is readable in a dark room, so the table now runs 1..100 like the controller's own scale. You get three more steps at the bottom; `IMAC_BCL_FLOOR=<n>` builds a higher floor if you want one. Same pass fixes `imac-backlight-nvram`, which recognised the old 97-level table by `max_brightness == 96` and silently saved nothing once the table grew -- it now handles both, and clamps only to the controller's range. Rebuild the table and the UKI to pick it up.

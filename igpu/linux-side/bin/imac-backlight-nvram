@@ -12,7 +12,8 @@ V=/sys/firmware/efi/efivars/backlight-level-7c436110-ab2a-4bbb-a880-fe41995c9f82
 [[ -r $B/brightness && -e $V ]] || exit 0
 b=$(<"$B/brightness"); max=$(<"$B/max_brightness")
 case $max in
-  99) level=$((b + 1)) ;;   # make-bcl100 table: levels 1..100
+  100) level=$((b + 1)) ;;  # make-bcl100 table: levels 1..101 (101 = 0xFFFF)
+  99) level=$((b + 1)) ;;   # make-bcl100 table 2026-09-24: levels 1..100
   96) level=$((b + 4)) ;;   # make-bcl100 table before 2026-09-24: levels 4..100
   79) level=$((b + 1)) ;;   # firmware table: levels 1..80
   *)  exit 0 ;;
