@@ -44,9 +44,11 @@ old = [v.strip() for v in m.group(3).replace('\n', ' ').split(',') if v.strip()]
 import os
 floor = int(os.environ.get('IMAC_BCL_FLOOR', '1'))
 assert 1 <= floor <= 50, "IMAC_BCL_FLOOR must be between 1 and 50"
-if old[0] == '0x64' and len(old) >= 3 and int(old[-1], 16) in (100, 101):
+def num(v):  # iasl writes 0, 1 and ~0 as Zero, One and Ones
+    return {'Zero': 0, 'One': 1, 'Ones': -1}.get(v, None) if not v.startswith('0x') else int(v, 16)
+if old[0] == '0x64' and len(old) >= 3 and num(old[-1]) in (100, 101):
     # this boot already runs an upgraded table: rebuild it with the wanted floor
-    if int(old[2], 16) == floor and int(old[-1], 16) == 101:
+    if num(old[2]) == floor and num(old[-1]) == 101:
         sys.exit(3)      # already exactly what was asked for
 else:
     assert old[0] == '0x50' and len(old) == 0x52, "unexpected ABCL: a different firmware?"
