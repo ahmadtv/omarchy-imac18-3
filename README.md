@@ -151,14 +151,14 @@ Every patch backs up what it replaces and can be reversed. Boot-related changes 
 
 ## 📮 Upstream
 
-Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-09-22._
+Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-09-26._
 
 | Where | What | Status |
 |---|---|---|
 | [drm/amd#4455](https://gitlab.freedesktop.org/drm/amd/-/issues/4455) | Native 5K on iMacs (community thread): this project's genlock fix, the first verified iMac18,3, and a lean mainline candidate (kernel exposes two tiles, compositor stitches) | Open, under discussion; VCE fix and set_os findings shared 2026-09-12; reviewed taprobane99's slim 7.3 patch and warned about the `linux-omarchy` 7.2.5 pitfalls 2026-09-22 |
 | [drm/amd#5810](https://gitlab.freedesktop.org/drm/amd/-/issues/5810) | GPU reset after a VCE hang: two fixes (reset deadlock in `dm_suspend`, VCE suspend during reset), patches inline | Open, filed by us, waiting for AMD |
 | [drm/amd#5595](https://gitlab.freedesktop.org/drm/amd/-/issues/5595) | The VCE encoder hang itself (Polaris, since 7.1.6) | Fixed upstream (`2ee9836545e6`, 7.3); not in 7.2.5 or 7.2.6, so still backported here |
-| [drm/i915#17042](https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/17042) | Hidden Intel HD 630 running headless: a quirk so i915 creates no outputs on iMacs, then the kernel's set_os list gains `iMac18,3` | Open; Intel replied 2026-09-16 pointing at `i915.disable_display=1`, we asked 2026-09-22 what stock kernels should do once set_os covers this model |
+| [drm/i915#17042](https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/17042) | Hidden Intel HD 630 running headless: a quirk so i915 creates no outputs on iMacs, then the kernel's set_os list gains `iMac18,3` | Open; Intel replied 2026-09-16 pointing at `i915.disable_display=1`, and on 2026-09-23 confirmed the eDP fallback happens without it. We answered 2026-09-26: fine to close as a documented setup (`disable_display=1` + a VBT with no child devices), unless they want an iMac18,3 DMI quirk |
 | linux-efi (mailing list) | One line: add `iMac18,3` to `apple_match_product_name()` in `x86-stub.c` (the patcher applies the same change at build time) | Not sent; waits on #17042 |
 | [jackdanyell/imac18-3-cs8409-linux-audio#5](https://github.com/jackdanyell/imac18-3-cs8409-linux-audio/pull/5) | Headset mic, live jack switching, mic gains, EarPods remote buttons | Open PR; hold-to-repeat volume and the centre long press added 2026-09-22 after choyer's review |
 | [omacom/omarchy#10985](https://github.com/omacom/omarchy/pull/10985) | Omarchy's audio panel lists each jack's ports as rows, the way macOS and GNOME do | Closed 2026-09-21 as a duplicate of #7205 |
