@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-09-30
+
+- **Upstream status: the Intel side is settled.** Intel declined a kernel quirk for iMacs without a VBT (drm/i915#17042, now closed): the fix belongs in firmware, which Apple won't ship for this model. Nothing changes on your machine -- the `macos` module's external VBT was already the answer, and now it's the documented one. The one-line kernel change that adds the iMac18,3 to the list of Macs told they're booting macOS won't be sent upstream on its own, since a stock kernel with it and no VBT would invent a phantom panel on the Intel GPU.
+
 ## 2026-09-25
 
 - **The top brightness step now reaches the panel's true maximum.** Level 100 made the firmware write 65500 of 65535; the firmware clamps anything above 100 to 65535, so the table gains a final step, 101, that is exactly what macOS drives at full brightness. The difference is 0.05%, invisible in practice; it just makes 100% mean 100%. The desktop still shows 100 at the top: `max_brightness` becomes 100, so the percentage Omarchy shows now equals the sysfs position exactly. `imac-backlight-nvram` knows the new table, so boot brightness keeps being saved. Rebuild the table and the UKI to pick it up.

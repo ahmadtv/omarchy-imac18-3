@@ -32,7 +32,7 @@ Kernel options, in `KERNEL_CMDLINE[default]` of `/etc/default/limine`: `snd_hda_
   - `vbt/make-headless-vbt.py` builds the 70-byte file and checks it against `intel_bios_is_valid_vbt()`. If the file can't be loaded, i915 logs `Requesting VBT firmware … failed` and falls back to `disable_display` alone.
 - With no connectors, `drm_fb_helper` logs `Cannot find any crtc or sizes` and creates no `/dev/fbN`, so Plymouth and fbcon get nothing from i915.
 - `vbt_firmware` is an "unsafe" parameter, so the kernel is tainted `U` — expected.
-- The upstream question — a quirk so iMacs need no `vbt_firmware` — is drm/i915#17042.
+- A quirk so iMacs need no `vbt_firmware` was asked for in drm/i915#17042 and declined (closed 2026-09-30): Intel's position is that the firmware's missing VBT has to be corrected at the source, and Apple won't ship one for this model. The external VBT stays the fix.
 
 **GuC/HuC** stay off (the gen9 default). HuC would only add low-power H.264 with CBR/VBR (`i915.enable_guc=2`, which also taints and can wedge the GT if the GuC upload fails). Without it Kaby Lake still encodes H.264 (EncSlice, full rate control, plus low-power CQP) and 8-bit HEVC, up to 4K.
 
