@@ -76,6 +76,9 @@ AUDIO_SRC="${CACHE}/imac18-3-cs8409-linux-audio"
 AUDIO_PIN=be90113
 AUDIO_PATCH="${REPO_DIR}/patches/cs8409-headset-capture.patch"
 AUDIO_DKMS=snd_hda_macbookpro
+AUDIO_DKMS_VER=0.2
+# DKMS sources live here; overridable only so the rival check can be tested.
+AUDIO_SRCROOT="${AUDIO_SRCROOT:-/usr/src}"
 # WirePlumber publishes the codec as its part number, "CS8409/CS42L83 Analog".
 WP_NAMES_SRC="${REPO_DIR}/audio/wireplumber/51-imac-audio-names.conf"
 WP_NAMES="${HOME}/.config/wireplumber/wireplumber.conf.d/51-imac-audio-names.conf"
@@ -83,16 +86,26 @@ WP_NAMES="${HOME}/.config/wireplumber/wireplumber.conf.d/51-imac-audio-names.con
 # it in the same updates/dkms directory as ours, so on the next kernel update
 # the order `dkms autoinstall` happens to run in decides which one survives.
 # That is a coin flip between working audio and silence, so find and clear it.
+# A rival can also carry OUR name with another version: Omarchy's proposed
+# snd-hda-macbookpro-dkms package (davidjo's driver) registers as
+# snd_hda_macbookpro/0.1 -- same module, no headset capture, no remote buttons.
 audio_rival_dkms() {
     local d name ver
-    for d in /usr/src/*/dkms.conf; do
+    for d in "$AUDIO_SRCROOT"/*/dkms.conf; do
         [[ -f $d ]] || continue
         grep -qi 'BUILT_MODULE_NAME.*cs8409' "$d" || continue
         name="$(sed -n 's/^PACKAGE_NAME="\?\([^"]*\)"\?.*/\1/p' "$d" | head -1)"
-        [[ -z $name || $name == "$AUDIO_DKMS" ]] && continue
         ver="$(sed -n 's/^PACKAGE_VERSION="\?\([^"]*\)"\?.*/\1/p' "$d" | head -1)"
+        [[ -z $name ]] && continue
+        [[ $name == "$AUDIO_DKMS" && $ver == "$AUDIO_DKMS_VER" ]] && continue
         printf '%s/%s\n' "$name" "$ver"
     done
+}
+# The pacman package that owns a rival's source tree, if any. Such a rival has
+# to be uninstalled through pacman: deleting its files leaves the package
+# registered, and its next upgrade puts the tree straight back.
+audio_rival_pkg() {   # audio_rival_pkg <name/version>
+    pacman -Qqo "${AUDIO_SRCROOT}/${1/\//-}" 2>/dev/null | head -1
 }
 # `dkms status ... installed` only says DKMS registered a build. With a rival
 # module of the same name, the file actually sitting in updates/dkms may be the
@@ -120,6 +133,7 @@ mod_audio_detect() {
     [[ $'\n'$mods == *$'\n'snd_hda_codec_cs8409* ]] && loaded=1
     audio_installed_is_ours "$KREL" && patched=1
     if kernel_pending && ! audio_installed_is_ours "$TARGET_KREL"; then echo partial
+    elif [[ -n $(audio_rival_dkms) ]]; then echo partial   # a second cs8409 driver will win the next kernel update
     elif (( dkms_ok && loaded && patched )); then echo applied
     elif (( loaded )); then echo partial       # driver up, but unpatched and/or DKMS can't rebuild it
     else echo not-applied; fi
@@ -161,17 +175,25 @@ mod_audio_preflight() {
                 # overwrote its file, so it takes ours down with it and puts the
                 # stock module back. Whatever we remove here, ours is rebuilt
                 # below; never treat this as a removal of the rival alone.
-                sudo dkms remove "$r" --all 2>/dev/null || true
-                # Leaving the source tree means the next kernel update rebuilds
-                # it and it wins the path again, so the tree has to go too.
-                [[ -f "/usr/src/${r/\//-}/dkms.conf" ]] && sudo rm -rf "/usr/src/${r/\//-}"
+                local pkg; pkg="$(audio_rival_pkg "$r")"
+                if [[ -n $pkg ]]; then
+                    # Its pacman hook runs the dkms remove; the package must go
+                    # with it or the next upgrade restores the tree.
+                    say "uninstalling package ${pkg} (provides ${r})"
+                    sudo pacman -R --noconfirm "$pkg" 2>&1 | tail -2 || true
+                else
+                    sudo dkms remove "$r" --all 2>/dev/null || true
+                    # Leaving the source tree means the next kernel update rebuilds
+                    # it and it wins the path again, so the tree has to go too.
+                    [[ -f "${AUDIO_SRCROOT}/${r/\//-}/dkms.conf" ]] && sudo rm -rf "${AUDIO_SRCROOT:?}/${r/\//-}"
+                fi
             done <<<"$rival"
             local k
             for k in "$KREL" "$TARGET_KREL"; do
                 audio_installed_is_ours "$k" && continue
                 [[ -d "/usr/lib/modules/$k/kernel" ]] || continue
                 say "reinstalling our driver for ${k} (the removal took it too)"
-                sudo dkms install "${AUDIO_DKMS}/0.2" -k "$k" --force 2>&1 | tail -3
+                sudo dkms install "${AUDIO_DKMS}/${AUDIO_DKMS_VER}" -k "$k" --force 2>&1 | tail -3
             done
         else
             warn "left in place — a future kernel update may silently replace our driver with it"
@@ -194,7 +216,7 @@ mod_audio_apply() {
     # lived in /tmp). Clear that first so the installer can re-register cleanly.
     if dkms status 2>/dev/null | grep -q "snd_hda_macbookpro.*broken"; then
         say "removing broken DKMS registration"
-        sudo dkms remove snd_hda_macbookpro/0.2 --all 2>/dev/null || true
+        sudo dkms remove "${AUDIO_DKMS}/${AUDIO_DKMS_VER}" --all 2>/dev/null || true
     fi
     # Upstream driver source at the exact commit the patch is verified against.
     if [[ -d "$AUDIO_SRC/.git" ]]; then
@@ -225,7 +247,7 @@ mod_audio_apply() {
     # then works on its first boot instead of the one after.
     if kernel_pending; then
         say "also building for the pending kernel ${TARGET_KREL}"
-        sudo dkms install "${AUDIO_DKMS}/0.2" -k "$TARGET_KREL" 2>&1 | tail -3 \
+        sudo dkms install "${AUDIO_DKMS}/${AUDIO_DKMS_VER}" -k "$TARGET_KREL" 2>&1 | tail -3 \
             || warn "build for ${TARGET_KREL} failed — audio will be silent on its first boot"
     fi
     local k bad=0 kernels=("$KREL")
@@ -242,7 +264,7 @@ mod_audio_apply() {
 }
 mod_audio_remove() {
     [[ -x "$AUDIO_SRC/install.cirrus.driver.sh" ]] && ( cd "$AUDIO_SRC" && sudo ./install.cirrus.driver.sh -r )
-    sudo dkms remove snd_hda_macbookpro/0.2 --all 2>/dev/null || true
+    sudo dkms remove "${AUDIO_DKMS}/${AUDIO_DKMS_VER}" --all 2>/dev/null || true
     rm -f "$WP_NAMES"; systemctl --user restart wireplumber 2>/dev/null || true
     say "stock module restored — reboot to load it"
 }

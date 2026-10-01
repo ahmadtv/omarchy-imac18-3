@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-10-01
+
+- **Audio is protected from a second CS8409 driver installed by Omarchy itself.** A draft Omarchy change (omacom/omarchy#12689 with omacom/omarchy-pkgs#249) would install davidjo's `snd-hda-macbookpro-dkms` on 2017-2019 iMacs. It registers under the same DKMS name as this patcher's driver, just another version, so the patcher's rival check skipped it, and a later kernel update could silently swap your driver for one without the headset mic or EarPods buttons. The check now catches a different version under our own name too, removes a rival through pacman when a package owns it (deleting its files would leave the package to put them back on its next upgrade), and the status shows audio as partial as soon as a rival appears -- after the Omarchy update, before any kernel update can do damage. Run `--apply audio` when it does.
+
 ## 2026-09-30
 
 - **Upstream status: the Intel side is settled.** Intel declined a kernel quirk for iMacs without a VBT (drm/i915#17042, now closed): the fix belongs in firmware, which Apple won't ship for this model. Nothing changes on your machine -- the `macos` module's external VBT was already the answer, and now it's the documented one. The one-line kernel change that adds the iMac18,3 to the list of Macs told they're booting macOS won't be sent upstream on its own, since a stock kernel with it and no VBT would invent a phantom panel on the Intel GPU.
