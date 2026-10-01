@@ -22,6 +22,15 @@ second-tile wake timing at 300 ms / 30 ms unless it is measured on the 18,3
 (his 100 ms / 3 ms saves at most ~27 ms per boot). Drop
 `amdgpu-vce3-ring-align-mask.patch` there: 7.3 has the fix.
 
+Tested 2026-10-01 on this iMac (his 2026-09-24 version, ported to 7.2.5: the
+connector hunks go into `amdgpu_dm.c`, and `hpd_rx_irq_work_suspend()` keeps its
+7.2 name): both tiles come up as eDP with correct DisplayID tile properties, and
+aquamarine 0.15 sees the group ("Tile group 1 ... 5120x2880"), but Hyprland 0.56.2
+still makes two side-by-side monitors. So his patch can replace our lean core,
+and the stitch layer stays until Hyprland can combine a tile group into one
+output. Once it can, the stitch layer and `imac5k-stitch-hide-slave.patch` can go
+too, which is most of the 5K module.
+
 ## SD card reader
 
 Never worked (no `mmcblk` in any boot). The card is identified, then every data

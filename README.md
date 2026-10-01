@@ -151,11 +151,11 @@ Every patch backs up what it replaces and can be reversed. Boot-related changes 
 
 ## 📮 Upstream
 
-Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-09-30._
+Everything here that belongs in the kernel, the audio driver or Omarchy itself, and where it stands. Once a fix lands upstream, the matching patch leaves this repo. _Last checked 2026-10-01._
 
 | Where | What | Status |
 |---|---|---|
-| [drm/amd#4455](https://gitlab.freedesktop.org/drm/amd/-/issues/4455) | Native 5K on iMacs (community thread): this project's genlock fix, the first verified iMac18,3, and a lean mainline candidate (kernel exposes two tiles, compositor stitches) | Open and moving toward upstream: VCE fix and set_os findings shared 2026-09-12; our review of taprobane99's slim 7.3 patch (2026-09-22) was adopted in full. AMD's Venemo started reviewing it 2026-09-23; the patch is down to 140 lines, and mforce2 rebased it onto `amd-staging-drm-next` 2026-09-26 |
+| [drm/amd#4455](https://gitlab.freedesktop.org/drm/amd/-/issues/4455) | Native 5K on iMacs (community thread): this project's genlock fix, the first verified iMac18,3, and a lean mainline candidate (kernel exposes two tiles, compositor stitches) | Open and moving toward upstream: VCE fix and set_os findings shared 2026-09-12; our review of taprobane99's slim 7.3 patch (2026-09-22) was adopted in full. AMD's Venemo started reviewing it 2026-09-23; the patch is down to 140 lines, and mforce2 rebased it onto `amd-staging-drm-next` 2026-09-26. Tested on this iMac 2026-10-01: both tiles come up with correct tile properties, but Hyprland shows them as two monitors, so this patcher's stitch layer stays on top of it |
 | [drm/amd#5810](https://gitlab.freedesktop.org/drm/amd/-/issues/5810) | GPU reset after a VCE hang: two fixes (reset deadlock in `dm_suspend`, VCE suspend during reset), patches inline | Open, filed by us, waiting for AMD |
 | [drm/amd#5595](https://gitlab.freedesktop.org/drm/amd/-/issues/5595) | The VCE encoder hang itself (Polaris, since 7.1.6) | Fixed upstream (`2ee9836545e6`, 7.3); not in 7.2.5 or 7.2.6, so still backported here |
 | [drm/i915#17042](https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/17042) | Hidden Intel HD 630 running headless: a quirk so i915 creates no outputs on iMacs, then the kernel's set_os list gains `iMac18,3` | **Closed 2026-09-30.** Intel won't add a quirk: the missing VBT is the firmware's fault and has to be corrected there (2026-09-28), and Apple won't update this model's firmware. So the fix is the one this patcher ships: `i915.disable_display=1` plus an external VBT with no child devices via `i915.vbt_firmware` |
