@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-11-05
+
+- **Ready for Omarchy 4.5.0 and its kernel, linux-omarchy 7.2.15.** Checked before installing, on the exact 7.2.15-1 source (verified header-for-header against the real headers package) with the new kernel's own config: the 5K module and the CS8409 audio driver both compile cleanly. Two things had to change first, both in how the 5K build applies its patches. 7.2.15 already contains the VCE encoder fix this repo carried, and the old build would have pushed it into the wrong ring anyway; it now notices a fix that is already in the kernel and skips it. And one line of the 5K core -- clearing the second tile's latch when a stream switches off -- would have landed in the code that switches a stream *on*, because the lines around it changed; it is re-anchored, and the build now applies its patches with no fuzz at all, so a future kernel that moves code makes the build stop with an error instead of patching the wrong place. Nothing changes on the current kernel: the same code results. After `omarchy update`, run `./scripts/imac-patcher --apply 5k` before rebooting, as with any new kernel.
+
 ## 2026-10-01
 
 - **Audio is protected from a second CS8409 driver installed by Omarchy itself.** A draft Omarchy change (omacom/omarchy#12689 with omacom/omarchy-pkgs#249) would install davidjo's `snd-hda-macbookpro-dkms` on 2017-2019 iMacs. It registers under the same DKMS name as this patcher's driver, just another version, so the patcher's rival check skipped it, and a later kernel update could silently swap your driver for one without the headset mic or EarPods buttons. The check now catches a different version under our own name too, removes a rival through pacman when a package owns it (deleting its files would leave the package to put them back on its next upgrade), and the status shows audio as partial as soon as a rival appears -- after the Omarchy update, before any kernel update can do damage. Run `--apply audio` when it does.

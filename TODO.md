@@ -19,8 +19,9 @@ from taprobane99's slim 7.3-rc1 patch (drm/amd#4455, about 290 lines: wake and
 tiles only) plus the three pieces it leaves out: the deterministic genlock, the
 reboot/shutdown handoff, and the latch-write-is-not-a-hotplug fix. Keep the
 second-tile wake timing at 300 ms / 30 ms unless it is measured on the 18,3
-(his 100 ms / 3 ms saves at most ~27 ms per boot). Drop
-`amdgpu-vce3-ring-align-mask.patch` there: 7.3 has the fix.
+(his 100 ms / 3 ms saves at most ~27 ms per boot). `amdgpu-vce3-ring-align-mask.patch` is skipped automatically on any kernel that
+already carries the fix (7.2.15 does, via stable); drop the file once no supported
+kernel needs it.
 
 Tested 2026-10-01 on this iMac (his 2026-09-24 version, ported to 7.2.5: the
 connector hunks go into `amdgpu_dm.c`, and `hpd_rx_irq_work_suspend()` keeps its

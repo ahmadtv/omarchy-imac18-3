@@ -677,14 +677,11 @@ diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/dc/link/link_dpms.c 
  	} else {
  		dm_helpers_mst_enable_stream_features(stream);
  	}
-@@ -2401,6 +2434,8 @@
- 	update_psp_stream_config(pipe_ctx, true);
+@@ -2402,2 +2435,4 @@
  	dc->hwss.blank_stream(pipe_ctx);
- 
-+	dp_write_tiled_stream_disable_latch(link);
 +
- 	if (pipe_ctx->link_config.dp_tunnel_settings.should_use_dp_bw_allocation)
- 		deallocate_usb4_bandwidth(pipe_ctx->stream);
++	dp_write_tiled_stream_disable_latch(link);
+ 
  
 diff -ruN -x '.*' pristine7.2.2/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c core4/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
 --- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c	2026-08-28 09:25:22.000000000 +0300

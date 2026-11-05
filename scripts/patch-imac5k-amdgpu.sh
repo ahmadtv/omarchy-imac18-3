@@ -261,9 +261,20 @@ apply_patch() {          # apply_patch <file> <label>
 		say "${label} already applied — reusing"
 		return
 	fi
-	if patch -p1 --dry-run --force < "$f" >/dev/null 2>&1; then
+	# Already in this kernel (a backport landed in a stable release): reversing
+	# it applies cleanly. Applying it again could only land somewhere else.
+	if patch -p1 -R --dry-run --force --fuzz=0 < "$f" >/dev/null 2>&1; then
+		say "${label}: already in ${KVER} -- skipping"
+		touch "$stamp"
+		return
+	fi
+	# No fuzz, like the distro's own patches. With fuzz, a hunk whose context
+	# moved can be accepted in a different function and still report success
+	# (7.2.15: the latch clear landed in link_set_dpms_on, the VCE fix in the
+	# phys ring). An exact miss stops the build instead.
+	if patch -p1 --dry-run --force --fuzz=0 < "$f" >/dev/null 2>&1; then
 		say "applying ${label}"
-		patch -p1 < "$f"
+		patch -p1 --fuzz=0 < "$f"
 		touch "$stamp"
 		return
 	fi
