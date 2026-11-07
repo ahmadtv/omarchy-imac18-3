@@ -469,19 +469,49 @@ autobright_install() {
     rc=$?; rm -rf "$d"; return $rc
 }
 # A Mac's auto-brightness works the moment it is on; wluma starts empty and
-# does nothing until taught. Seed a starting curve for every light band that
+# does nothing until taught. Seed a starting curve for every light level that
 # has no lesson yet (never touching one that has), as a share of the panel's
 # maximum. wluma keeps its lessons in memory and rewrites this file, so it is
 # stopped while the file changes.
-AB_DATA="${HOME}/.local/share/wluma/eDP-1.yaml"
+# wluma 5 moved the lessons to $XDG_STATE_HOME and keys them by measured lux
+# instead of named bands (its ALS thresholds now only migrate old data); the
+# lux points below are where it puts each of our bands when it migrates.
+AB_DATA_V4="${HOME}/.local/share/wluma/eDP-1.yaml"
+AB_DATA_V5="${XDG_STATE_HOME:-${HOME}/.local/state}/wluma/eDP-1.yaml"
+autobright_v5() {
+    local v; v="$(wluma --version 2>/dev/null | awk '{print $2}')"
+    [[ -n $v ]] && (( ${v%%.*} >= 5 ))
+}
 autobright_seed() {
     local max; max="$(cat /sys/class/backlight/acpi_video0/max_brightness 2>/dev/null)" || return 0
+    local fmt=v4 data=$AB_DATA_V4
+    autobright_v5 && { fmt=v5; data=$AB_DATA_V5; }
+    # Old-format lessons not yet migrated: leave them for wluma 5 to migrate.
+    [[ $fmt == v5 && ! -f $data && -f $AB_DATA_V4 ]] && return 0
     systemctl --user stop wluma.service 2>/dev/null
-    mkdir -p "$(dirname "$AB_DATA")"
-    python3 - "$AB_DATA" "$max" <<'PY'
+    mkdir -p "$(dirname "$data")"
+    python3 - "$data" "$max" "$fmt" <<'PY'
 import os, re, sys
-path, maxb = sys.argv[1], int(sys.argv[2])
+path, maxb, fmt = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 seed = {"night": 30, "dark": 45, "dim": 60, "normal": 75, "bright": 90, "outdoors": 100}
+if fmt == "v5":
+    import yaml
+    lux = {"night": 1, "dark": 7, "dim": 21, "normal": 67, "bright": 300, "outdoors": 1198}
+    bounds = [0, 3, 15, 30, 150, 600, float("inf")]
+    doc = {}
+    if os.path.exists(path):
+        doc = yaml.safe_load(open(path)) or {}
+    doc.setdefault("output_name", "eDP-1")
+    entries = doc.setdefault("entries", {})
+    br = entries.setdefault("brightness", []) or []
+    entries.setdefault("dim", []); entries.setdefault("temperature", [])
+    for i, band in enumerate(seed):
+        lo, hi = bounds[i], bounds[i + 1]
+        if not any(lo <= e.get("als", -1) < hi for e in br):
+            br.append({"als": lux[band], "luma": 0, "value": max(1, round(maxb * seed[band] / 100))})
+    entries["brightness"] = br
+    open(path, "w").write(yaml.safe_dump(doc, sort_keys=False))
+    sys.exit(0)
 have = {}
 if os.path.exists(path):
     for lux, luma, b in re.findall(r"- lux: (\w+)\n  luma: (\d+)\n  brightness: (\d+)", open(path).read()):
@@ -500,7 +530,11 @@ mod_autobright_detect() {
     compgen -G '/sys/bus/iio/devices/iio:device*/in_illuminance_input' >/dev/null || { echo n/a; return; }
     # Whether wluma is switched on right now is the switch's business (the
     # Display panel's AUTO), not the install's: applied = installed + configured.
-    if autobright_ours && pacman -Q wluma >/dev/null 2>&1; then echo applied
+    # A wluma that knows idle dimming and gamma, under a config written before
+    # it did, runs with both on: partial until --apply rewrites the config.
+    if autobright_ours && pacman -Q wluma >/dev/null 2>&1; then
+        if grep -qaw gamma "$(command -v wluma)" && ! grep -qx 'gamma = false' "$AB_CONF"; then echo partial
+        else echo applied; fi
     elif autobright_ours; then echo partial
     else echo not-applied; fi
 }
@@ -520,8 +554,12 @@ mod_autobright_apply() {
     local newer=0; grep -qaw gamma "$(command -v wluma)" && newer=1
     {
         printf '%s\n' "$AB_MARK" '# Written by imac-patcher; "--remove autobright" puts back what was here.'
-        printf '%s\n' '[als.iio]' 'path = "/sys/bus/iio/devices"' \
-            'thresholds = { 0 = "night", 3 = "dark", 15 = "dim", 30 = "normal", 150 = "bright", 600 = "outdoors" }' ''
+        # wluma 5 dropped the bands (only migrating old lessons uses them).
+        printf '%s\n' '[als.iio]' 'path = "/sys/bus/iio/devices"'
+        if ! autobright_v5 || { [[ -f $AB_DATA_V4 ]] && [[ ! -f $AB_DATA_V5 ]]; }; then
+            printf '%s\n' 'thresholds = { 0 = "night", 3 = "dark", 15 = "dim", 30 = "normal", 150 = "bright", 600 = "outdoors" }'
+        fi
+        echo
         ((newer)) && printf '%s\n' '[idle]' 'enabled = false' ''
         printf '%s\n' '[[output.backlight]]' 'name = "eDP-1"' 'path = "/sys/class/backlight/acpi_video0"' 'capturer = "none"'
         ((newer)) && printf '%s\n' 'gamma = false'

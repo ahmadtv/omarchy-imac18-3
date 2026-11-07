@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-11-07
+
+- **Auto-brightness is ready for wluma 5.** wluma 5.0 moved its learned brightness to `~/.local/state/wluma` and now remembers it by measured light level instead of named bands. It also turned on two things by default: dimming the screen to 30% after two minutes idle (which fights Omarchy's own idle and screensaver) and taking over the display's colour (gamma) control (which locks out Omarchy's night light). A config written for wluma 4 left both on, and the status still said "applied". The patcher now turns both off on wluma 5, stops writing the light bands wluma no longer uses (it only keeps them while old lessons still need migrating), seeds a fresh install's starting curve in the new format, and shows `partial` when the installed wluma is newer than its config. Your learned brightness carries over unchanged. After a wluma upgrade, run `./scripts/imac-patcher --apply autobright`.
+
 ## 2026-11-05
 
 - **Ready for Omarchy 4.5.0 and its kernel, linux-omarchy 7.2.15.** Checked before installing, on the exact 7.2.15-1 source (verified header-for-header against the real headers package) with the new kernel's own config: the 5K module and the CS8409 audio driver both compile cleanly. Two things had to change first, both in how the 5K build applies its patches. 7.2.15 already contains the VCE encoder fix this repo carried, and the old build would have pushed it into the wrong ring anyway; it now notices a fix that is already in the kernel and skips it. And one line of the 5K core -- clearing the second tile's latch when a stream switches off -- would have landed in the code that switches a stream *on*, because the lines around it changed; it is re-anchored, and the build now applies its patches with no fuzz at all, so a future kernel that moves code makes the build stop with an error instead of patching the wrong place. Nothing changes on the current kernel: the same code results. After `omarchy update`, run `./scripts/imac-patcher --apply 5k` before rebooting, as with any new kernel.
