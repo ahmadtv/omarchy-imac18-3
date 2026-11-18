@@ -18,12 +18,21 @@ Also carries the two stitch-specific boot fixes from this repo, unchanged:
     touches the tiled pair, because the one-shot alignment can fire before the
     re-trained slave tile is running.
 
-One fix over erik2's original: the saved tile-group id buffer was 8 bytes
-while DRM tile-group ids (drm_tile_group.group_data, and the topology_id
-argument of drm_mode_get/create_tile_group) are 9 bytes. The restore path
-copied a truncated id and the lookup read one byte past the buffer, so a
-restored slave connector could end up in a fresh, mismatched tile group.
-Now 9 bytes (gcc flagged it: -Wstringop-overread).
+Two fixes over erik2's original:
+  * the saved tile-group id buffer was 8 bytes while DRM tile-group ids
+    (drm_tile_group.group_data, and the topology_id argument of
+    drm_mode_get/create_tile_group) are 9 bytes. The restore path copied a
+    truncated id and the lookup read one byte past the buffer, so a restored
+    slave connector could end up in a fresh, mismatched tile group. Now 9
+    bytes (gcc flagged it: -Wstringop-overread);
+  * a logical modeset on the live stitched root (a compositor asking for a
+    mode other than 5120x2880, e.g. Hyprland at 3840x2160) crashed in
+    dm_update_crtc_state: the enable pass accepts such a modeset without
+    reprogramming and keeps the root stream, but the disable pass had already
+    removed the root and peer streams, so the enable pass reached
+    BUG_ON(dm_new_crtc_state->stream == NULL). The disable pass now applies
+    the same amdgpu_dm_tiled_stitch_has_live_root_stream() test and keeps
+    both streams.
 
 Apply order on a pristine 7.1.x / 7.2.x tree:
   patch -p1 < patches/imac5k-lean-core-7.2.x.patch
@@ -1496,16 +1505,37 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  		/*
  		 * If we already removed the old stream from the context
  		 * (and set the new stream to NULL) then we can't reuse
-@@ -12348,6 +13484,23 @@
+@@ -12299,6 +13435,20 @@
+ 		if (!dm_old_crtc_state->stream)
+ 			goto skip_modeset;
+ 
++		/*
++		 * Tiled stitch: keep the live stitched root's streams (root and
++		 * slave peer) for a mode change the enable pass accepts as
++		 * logical, without reprogramming. Removing them here would leave
++		 * that pass with a NULL stream and hit the BUG_ON after
++		 * skip_modeset -- e.g. Hyprland asking for 3840x2160 on the
++		 * 5120x2880 panel. Same test as the enable pass, so both passes
++		 * agree.
++		 */
++		if (amdgpu_dm_tiled_stitch_has_live_root_stream(aconnector,
++								dm_old_crtc_state,
++								new_crtc_state))
++			goto skip_modeset;
++
+ 		/* Unset freesync video if it was active before */
+ 		if (dm_old_crtc_state->freesync_config.state == VRR_STATE_ACTIVE_FIXED) {
+ 			dm_new_crtc_state->freesync_config.state = VRR_STATE_INACTIVE;
+@@ -12348,6 +13498,23 @@
  		dc_stream_release(dm_old_crtc_state->stream);
  		dm_new_crtc_state->stream = NULL;
  
 +		/*
 +		 * Tiled stitch: tear down the slave-tile peer stream
 +		 * alongside the root (mirrors the root remove above). The
-+		 * keep-stream gate ahead of this branch skips the whole removal
-+		 * for a tiled CRTC-off, so the peer is only removed on a genuine
-+		 * modeset/disable.
++		 * logical-modeset gate at the top of this branch skips the whole
++		 * removal while the stitched root stays live, so the peer is only
++		 * removed on a genuine modeset/disable.
 +		 */
 +		if (dm_old_crtc_state->stream_peer) {
 +			if (dc_state_remove_stream(dm->dc, dm_state->context,
@@ -1520,7 +1550,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  		reset_freesync_config_for_crtc(dm_new_crtc_state);
  
  		*lock_and_validation_needed = true;
-@@ -12380,6 +13533,87 @@
+@@ -12380,6 +13547,87 @@
  			drm_dbg_atomic(adev_to_drm(adev), "Enabling DRM crtc: %d\n",
  					 crtc->base.id);
  
@@ -1608,7 +1638,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  			if (dc_state_add_stream(
  					dm->dc,
  					dm_state->context,
-@@ -12415,8 +13649,9 @@
+@@ -12415,8 +13663,9 @@
  	BUG_ON(dm_new_crtc_state->stream == NULL);
  
  	/* Scaling or underscan settings */
@@ -1620,7 +1650,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  		update_stream_scaling_settings(adev_to_drm(adev),
  			&new_crtc_state->mode, dm_new_conn_state, dm_new_crtc_state->stream);
  
-@@ -12815,6 +14050,17 @@
+@@ -12815,6 +14064,17 @@
  
  		dm_new_plane_state->dc_state = NULL;
  
@@ -1638,7 +1668,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  		*lock_and_validation_needed = true;
  
  	} else { /* Add new planes */
-@@ -12893,6 +14139,67 @@
+@@ -12893,6 +14153,67 @@
  		 */
  		dm_new_plane_state->dc_state->update_flags.bits.full_update = 1;
  
@@ -1706,7 +1736,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  		*lock_and_validation_needed = true;
  	}
  
-@@ -14060,7 +15367,8 @@
+@@ -14060,7 +15381,8 @@
  		amdgpu_dm_connector->dc_sink :
  		amdgpu_dm_connector->dc_em_sink;
  
@@ -1716,7 +1746,7 @@ diff -ruN -x '.*' core4/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c pair4/
  
  	if (!drm_edid || !sink) {
  		dm_con_state = to_dm_connector_state(connector->state);
-@@ -14170,6 +15478,39 @@
+@@ -14170,6 +15492,39 @@
  						       freesync_capable);
  }
  

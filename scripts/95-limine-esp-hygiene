@@ -36,7 +36,25 @@ set -uo pipefail
 
 ESP=/boot
 CANONICAL="${ESP}/limine.conf"
-UKI="${ESP}/EFI/Linux/omarchy_linux.efi"
+# The default entry's UKI: the first kernel named in BOOT_ORDER that has an
+# image (linux-omarchy -> omarchy_linux-omarchy.efi), else Arch's
+# omarchy_linux.efi. Hard-coding omarchy_linux.efi copied Arch's kernel over
+# the fallback even where linux-omarchy is the default. BOOT_ORDER is read in
+# limine-entry-tool's own order, last one wins: /usr/share drop-ins,
+# /etc/limine-entry-tool.conf, /etc drop-ins (Omarchy 4.5 sets it there),
+# /etc/default/limine. No BOOT_ORDER (older setups): omarchy_linux.efi, as before.
+default_uki() {
+	local order tok toks
+	order="$(sed -n 's/^BOOT_ORDER="\(.*\)"/\1/p' /usr/share/limine-entry-tool.d/*.conf \
+		/etc/limine-entry-tool.conf /etc/limine-entry-tool.d/*.conf /etc/default/limine 2>/dev/null | tail -1)"
+	IFS=', ' read -ra toks <<<"$order"
+	for tok in "${toks[@]}"; do
+		[[ -z $tok || $tok == *[*?]* ]] && continue
+		[[ -f "${ESP}/EFI/Linux/omarchy_${tok}.efi" ]] && { echo "${ESP}/EFI/Linux/omarchy_${tok}.efi"; return; }
+	done
+	echo "${ESP}/EFI/Linux/omarchy_linux.efi"
+}
+UKI="$(default_uki)"
 FALLBACK="${ESP}/EFI/BOOT/BOOTX64.EFI"
 
 # Same list limine-install checks, minus the canonical path itself.

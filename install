@@ -10,9 +10,20 @@
 #
 # Pass arguments straight through, e.g. to skip the menu:
 #   bash <(curl -fsSL .../install) --apply 5k
+#   bash <(curl -fsSL .../install) --remove all     # undo every change
+#
+# Run from a checkout (./install), it launches that checkout's patcher as it
+# is -- your branch, your edits -- and pulls nothing. IMAC_PATCH_REPO clones a
+# fork instead of this repo.
 set -euo pipefail
 
-REPO_URL="https://github.com/ahmadtv/omarchy-imac18-3"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+if [ -n "$SELF_DIR" ] && [ -x "$SELF_DIR/scripts/imac-patcher" ]; then
+    echo "==> Using this checkout: $SELF_DIR"
+    exec "$SELF_DIR/scripts/imac-patcher" "$@"
+fi
+
+REPO_URL="${IMAC_PATCH_REPO:-https://github.com/ahmadtv/omarchy-imac18-3}"
 DEST="${IMAC_PATCH_DIR:-$HOME/.local/share/omarchy-imac18-3}"
 # The repo was briefly called omarchy-imac5k. A clone made then keeps updating
 # in place rather than a second copy appearing beside it.
