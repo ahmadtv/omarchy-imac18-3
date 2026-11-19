@@ -9,6 +9,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 
 ## 2026-11-19
 
+- **Smaller resolutions work on the 5K panel.** Asking for 3840x2160, 2560x1440, 1920x1080 or any other mode below 5120x2880 no longer shows the picture squashed on the left half with the right half black. The panel keeps running at its native timing and the picture is scaled up to fill it, cut at the seam between the panel's two halves so each half shows its own part; it keeps its shape, so a 16:10 size like 2560x1600 gets thin black bars at the sides. The pointer lands where it is drawn on both halves, and turning the screen off and on at such a mode brings it back (the driver used to refuse that). The display settings list the common sizes beside 5120x2880, which stays the default, and `--status` counts 5K as applied at any of them. For a 4K-size desktop, 5120x2880 at scale 1.333333 is still the sharper choice. Rebuild with `./scripts/imac-patcher --apply 5k` and reboot.
 - **The shutdown and reboot splash fills the whole 5K panel.** With the 5K module, the splash shown after the desktop exits could show only the left half of the logo, cut at the seam between the panel's two halves, with the right half black until power-off. The driver turned the right half on without giving it a picture when the screen was switched on with a fresh image in one step, which is what the splash does; the desktop itself never hit this because it keeps flipping frames. Rebuild with `./scripts/imac-patcher --apply 5k` and reboot.
 
 ## 2026-11-18

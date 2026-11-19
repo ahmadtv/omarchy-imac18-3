@@ -122,7 +122,7 @@ The colour settings live in one marked rule for the iMac panel (`eDP-1`) at the 
 
 **Several kernels installed?** The patcher builds for the kernel the *default* boot entry starts (the first in Limine's `BOOT_ORDER`: `linux-omarchy` on Omarchy 4.x), not the newest version number, so Arch's `linux` or `linux-lts` can stay as plain fallbacks.
 
-**Want a 4K-size desktop on 5K?** Keep the panel at 5120×2880 and use scale 1.333333 in its `monitors.lua` rule. Other resolutions (3840×2160, 2560×1440, …) are not scaled to the panel yet: the desktop survives the request, but the picture is wrong until you switch back.
+**Want a 4K-size desktop on 5K?** Keep the panel at 5120×2880 and use scale 1.333333 in its `monitors.lua` rule: the same workspace at full sharpness. Smaller resolutions (3840×2160, 2560×1440, 1920×1080, …) are listed too and work: the panel stays at its native timing and the picture is scaled up to fill it, keeping its shape (16:10 sizes get thin bars at the sides). They are softer than 5K with a scale, so use them only when an app needs the real resolution.
 
 **The 5K module needs kernel 7.1.x or 7.2.x** and the patcher refuses anything else — a mis-applied GPU patch means a broken display, so a newer kernel must be re-ported by hand first. You supply nothing else: the installer fetches the matching kernel source itself (≈8 GB, ~20–40 min the first build; re-runs are fast).
 

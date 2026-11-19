@@ -926,17 +926,20 @@ amdgpu_current_for() {   # amdgpu_current_for <kernelrelease>
     amdgpu_patched_for "$1" &&
         [[ "$(cat "/usr/lib/modules/$1/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.imac5k-patchset" 2>/dev/null)" == "$("$INSTALLER_5K" --patchset)" ]]
 }
+# The panel offers 5120x2880: both tiles are up and stitched into one output.
+# Not the mode the desktop runs: a smaller one is scaled onto the panel and is
+# as good a sign the stitch works. From sysfs, so it holds outside Hyprland.
+panel_offers_5k() { grep -qsx '5120x2880' /sys/class/drm/card*-eDP-*/modes; }
 mod_5k_detect() {
-    local built=0 conf=0 live=0 res=""
+    local built=0 conf=0 live=0
     amdgpu_patched_for "$KREL" && built=1
     grep -q 'amdgpu.tiled_stitch=1' "$LIMINE_DEFAULT" 2>/dev/null && conf=1
     grep -q 'amdgpu.tiled_stitch=1' /proc/cmdline 2>/dev/null && live=1
-    command -v hyprctl >/dev/null && res="$(hyprctl monitors 2>/dev/null | grep -oE '5120x2880' | head -1)"
     # Not "applied" while the kernel the next boot starts lacks a current build
     # (not built yet, or built from an older patch set): report partial so the
     # menu offers it and --apply does not skip it.
     if (( built || conf )) && ! amdgpu_current_for "$TARGET_KREL"; then echo partial
-    elif (( built && conf && live )) && [[ "$res" == "5120x2880" ]]; then echo applied
+    elif (( built && conf && live )) && panel_offers_5k; then echo applied
     elif (( built || conf || live )); then echo partial
     else echo not-applied; fi
 }
@@ -992,11 +995,11 @@ mod_5k_preflight() {
     return $(( 1 - ok ))
 }
 mod_5k_apply() {
-    # A current build already running: nothing to build, what is left is the
-    # display layout.
+    # A current build already running: rebuilding it would change nothing.
+    # (detect is not "applied" here only when the panel offers no 5120x2880.)
     if ! kernel_pending && amdgpu_current_for "$KREL" && grep -q 'amdgpu.tiled_stitch=1' /proc/cmdline; then
-        say "the current patched module is running — only the display layout is left"
-        warn "Hyprland is not at 5120x2880: the iMac's rule in $MONITORS_LUA should ask for mode \"preferred\" (or 5120x2880)"
+        say "the current patched module is running — nothing to rebuild"
+        warn "but the panel offers no 5120x2880 on this boot: its second tile did not come up (journalctl -k -b | grep TILED_STITCH)"
         return 1
     fi
     amdgpu_patched_for "$TARGET_KREL" && ! amdgpu_current_for "$TARGET_KREL" &&
