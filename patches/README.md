@@ -63,6 +63,11 @@ The installer applies these in order to pristine kernel source:
 - **`imac5k-stitch-hide-slave.patch`** — with the stitch on, the slave tile's
   connector reports disconnected, so compositors and settings panels see one
   display instead of offering the tile as a second output.
+- **`imac5k-stitch-peer-attach.patch`** — when a client turns the crtc on
+  with a new framebuffer in one commit (Plymouth's shutdown splash after the
+  compositor exits), the right tile gets its plane and buffer address too.
+  Before it, the right half stayed black and the splash logo was cut at the
+  seam.
 
 Then three fixes that aren't about 5K, carried in the same module build:
 
@@ -80,6 +85,7 @@ Then three fixes that aren't about 5K, carried in the same module build:
 patch -p1 < patches/imac5k-lean-core-7.2.x.patch
 patch -p1 < patches/imac5k-stitch-layer-7.x.patch
 patch -p1 < patches/imac5k-stitch-hide-slave.patch
+patch -p1 < patches/imac5k-stitch-peer-attach.patch
 patch -p1 < patches/amdgpu-hpd-skip-during-reset.patch
 patch -p1 < patches/amdgpu-vce-suspend-in-reset.patch
 patch -p1 < patches/amdgpu-vce3-ring-align-mask.patch
