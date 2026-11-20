@@ -786,6 +786,7 @@ macos_drop_find_bootloaders() {
 }
 mod_macos_remove() {
     local c
+    fallback_snapshot "removing macos" || return 1
     macos_drop_old_loader
     sudo rm -f "$MACOS_HOOK"
     sudo systemctl disable --now imac-backlight-nvram.service 2>/dev/null
@@ -887,6 +888,7 @@ EOF
 mod_boot_remove() {
     # The repaired layout is what stock Omarchy installs, so there is nothing
     # sensible to "undo" there; only the hook is ours to take back.
+    fallback_snapshot "removing boot" || return 1
     sudo rm -f "$HYGIENE_HOOK"
     say "hygiene hook removed; the ESP layout is left as stock Omarchy installs it"
     warn "to restore the old UKI-over-fallback bypass: sudo cp /boot/EFI/BOOT/BOOTX64.UKI-bypass.backup ${FALLBACK_PATH}"
@@ -1001,6 +1003,7 @@ mod_5k_apply() {
 }
 mod_5k_remove() {
     local k
+    fallback_snapshot "removing 5k" || return 1
     for k in "$KREL" "$TARGET_KREL"; do
         [[ $k == "$KREL" ]] || kernel_pending || continue
         amdgpu_patched_for "$k" || continue
@@ -1172,7 +1175,13 @@ run_module() {   # $1 = apply|remove, $2 = id
 }
 # Every module, last applied first, then the build caches (they are only ours).
 remove_everything() {
-    local i rc=0
+    local i m st rc=0
+    # One snapshot, named for the whole run, if any boot module will change.
+    for m in "${MODULES[@]}"; do
+        [[ $("mod_${m}_tier") == boot ]] || continue
+        st="$("mod_${m}_detect")"
+        if [[ $st == applied || $st == partial ]]; then fallback_snapshot "remove all" || return 1; break; fi
+    done
     for (( i = ${#MODULES[@]} - 1; i >= 0; i-- )); do run_module remove "${MODULES[i]}" || rc=1; done
     local caches=("${HOME}/.cache/kernel-5k-build" "$CACHE")
     if compgen -G "${HOME}/.cache/kernel-5k-build/*" >/dev/null || compgen -G "${CACHE}/*" >/dev/null; then
