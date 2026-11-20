@@ -2,6 +2,10 @@
 
 What changed for someone running the patcher, newest first. Small fixes count. The commit history has the detail.
 
+## 2026-11-19
+
+- **The shutdown and reboot splash fills the whole 5K panel.** With the 5K module, the splash shown after the desktop exits could show only the left half of the logo, cut at the seam between the panel's two halves, with the right half black until power-off. The driver turned the right half on without giving it a picture when the screen was switched on with a fresh image in one step, which is what the splash does; the desktop itself never hit this because it keeps flipping frames. Rebuild with `./scripts/imac-patcher --apply 5k` and reboot.
+
 ## 2026-11-18
 
 - **5K no longer crashes when the desktop asks the panel for another resolution.** With the 5K module running, a compositor asking for anything other than 5120x2880 -- Hyprland starting with a 3840x2160 monitor rule or profile, or picking 4K in the display settings -- hit a kernel BUG in the display driver (`amdgpu_dm.c`, `dm_update_crtc_state`): the screen went blank right after login, with nothing but a power-cycle to recover. The driver means to keep the panel at 5K and accept such a request as a logical mode, but one step of its mode check removed the panel's output before the step that keeps it ran. Both steps now agree, so the request no longer crashes and the panel stays at 5K. **The picture at such a mode is not right yet:** the smaller image is not scaled across the panel's two halves, so the left half shows it squashed and the right half stays black (switching back to 5120x2880 restores it). For a 4K-size desktop, keep 5120x2880 and set the scale to 1.333333: the same 3840x2160 workspace, at full sharpness. Rebuild with `./scripts/imac-patcher --apply 5k` and reboot; the build notices the changed patch and starts from fresh source.

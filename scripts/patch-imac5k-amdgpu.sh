@@ -31,11 +31,13 @@ set -euo pipefail
 PATCH_KVER_SUPPORTED="7.1 7.2"   # kernel series this patch is verified to apply to
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The stack: the lean core (the upstream candidate), then the stitch layer that
-# presents both tiles as one output, then its one-display fix. Each must apply
-# cleanly to pristine source, in this order, or nothing is installed.
+# presents both tiles as one output, then its one-display and right-tile plane
+# fixes. Each must apply cleanly to pristine source, in this order, or nothing
+# is installed.
 PATCH_FILE="${SCRIPT_DIR}/../patches/imac5k-lean-core-7.2.x.patch"
 EXTRA_PATCHES=("${SCRIPT_DIR}/../patches/imac5k-stitch-layer-7.x.patch"
 	"${SCRIPT_DIR}/../patches/imac5k-stitch-hide-slave.patch"
+	"${SCRIPT_DIR}/../patches/imac5k-stitch-peer-attach.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-hpd-skip-during-reset.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-vce-suspend-in-reset.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-vce3-ring-align-mask.patch")
