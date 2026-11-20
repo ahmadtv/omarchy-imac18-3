@@ -55,6 +55,11 @@ The installer applies these in order to pristine kernel source:
   mistaken for a hotplug. Posted upstream in drm/amd#4455. With this alone the
   kernel exposes two proper tiles and a tile-aware compositor (Mutter, KWin)
   stitches them.
+- **`imac5k-slave-link-align.patch`** — the right tile's DP link no longer
+  fails training ("enabling link 1 failed") when its sink drops interlane
+  alignment between the training pattern and video while every lane stays
+  locked; it sets alignment again once video runs. Before it, about one boot
+  in five logged the failure and every wake paid for extra retrains.
 - **`imac5k-stitch-layer-7.x.patch`** — erik2's single-display stitch
   (`amdgpu.tiled_stitch`) on top of the core, plus its two boot fixes: an early
   modeset so the disk-password prompt is full width, and a settle-and-resync
@@ -63,6 +68,11 @@ The installer applies these in order to pristine kernel source:
 - **`imac5k-stitch-hide-slave.patch`** — with the stitch on, the slave tile's
   connector reports disconnected, so compositors and settings panels see one
   display instead of offering the tile as a second output.
+- **`imac5k-stitch-peer-attach.patch`** — when a client turns the crtc on
+  with a new framebuffer in one commit (Plymouth's shutdown splash after the
+  compositor exits), the right tile gets its plane and buffer address too.
+  Before it, the right half stayed black and the splash logo was cut at the
+  seam.
 
 Then three fixes that aren't about 5K, carried in the same module build:
 
@@ -78,8 +88,10 @@ Then three fixes that aren't about 5K, carried in the same module build:
 
 ```bash
 patch -p1 < patches/imac5k-lean-core-7.2.x.patch
+patch -p1 < patches/imac5k-slave-link-align.patch
 patch -p1 < patches/imac5k-stitch-layer-7.x.patch
 patch -p1 < patches/imac5k-stitch-hide-slave.patch
+patch -p1 < patches/imac5k-stitch-peer-attach.patch
 patch -p1 < patches/amdgpu-hpd-skip-during-reset.patch
 patch -p1 < patches/amdgpu-vce-suspend-in-reset.patch
 patch -p1 < patches/amdgpu-vce3-ring-align-mask.patch
