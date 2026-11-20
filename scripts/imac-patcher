@@ -167,7 +167,10 @@ mod_audio_detect() {
     if kernel_pending && ! audio_installed_is_ours "$TARGET_KREL"; then echo partial
     elif [[ -n $(audio_rival_dkms) ]]; then echo partial   # a second cs8409 driver will win the next kernel update
     elif (( dkms_ok && loaded && patched )); then echo applied
-    elif (( loaded )); then echo partial       # driver up, but unpatched and/or DKMS can't rebuild it
+    # Some of ours is in place but not all (not rebuilt, not loaded yet). The
+    # in-kernel cs8409 alone is the stock state: it loads here too, without
+    # speakers, so being loaded says nothing about this module.
+    elif (( dkms_ok || patched )); then echo partial
     else echo not-applied; fi
 }
 mod_audio_preflight() {
@@ -319,7 +322,12 @@ COLOR_END="-- <<< imac-patcher: color"
 mod_color_title() { echo "Wide-gamut colour"; }
 mod_color_tier()  { echo safe; }
 mod_color_desc()  { echo "The panel is Display P3 and 10-bit; Hyprland's default sRGB mode leaves everything oversaturated. Sets cm=\"dp3\" and 10-bit on the iMac panel only."; }
+# What --remove leaves: the panel rule without the colour keys, so the scale
+# (which after a migration lived only in our block) survives. Apply drops it
+# again, since the block carries the scale.
+COLOR_KEPT="-- imac-patcher: the iMac panel's scale, kept when wide-gamut colour was removed"
 color_block() { sed -n "\|^${COLOR_BEGIN}\$|,\|^${COLOR_END}\$|p" "$MONITORS_LUA"; }
+color_kept_rule() { sed -n "\|^${COLOR_KEPT}\$|{n;p}" "$MONITORS_LUA" | head -1; }
 mod_color_detect() {
     [[ -f "$MONITORS_LUA" ]] || { echo n/a; return; }
     if color_block | grep -q 'cm = "dp3"'; then echo applied
@@ -337,8 +345,8 @@ m = next((m for m in json.load(sys.stdin) if m.get("make", "").startswith("Apple
 print(m["name"] + "\t" + format(m["scale"], "g") if m else "")')
     [[ -n $name ]] || { warn "Hyprland reports no iMac panel -- run this inside the Hyprland session"; return 1; }
     # The scale stays what the panel has now; a re-apply keeps the one in our
-    # block (it may have been tuned by hand).
-    kept=$(color_block | sed -n 's/.*hl\.monitor(.*scale = \([0-9][0-9.]*\).*/\1/p' | head -1)
+    # block (it may have been tuned by hand), or in the rule --remove left.
+    kept=$( { color_block; color_kept_rule; } | sed -n 's/.*hl\.monitor(.*scale = \([0-9][0-9.]*\).*/\1/p' | head -1)
     scale=${kept:-${scale:-1}}
     [[ $scale =~ ^[0-9]+([.][0-9]+)?$ ]] || scale=1
     cp "$MONITORS_LUA" "${MONITORS_LUA}.bak-$(date +%s)"
@@ -352,14 +360,18 @@ print(m["name"] + "\t" + format(m["scale"], "g") if m else "")')
 }
 # Our marked block, and what older versions wrote into the existing rules.
 mod_color_remove_lua() {
-    sed -i "\|^${COLOR_BEGIN}\$|,\|^${COLOR_END}\$|d" "$MONITORS_LUA"
+    sed -i "\|^${COLOR_BEGIN}\$|,\|^${COLOR_END}\$|d; \|^${COLOR_KEPT}\$|{N;d}" "$MONITORS_LUA"
     sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$MONITORS_LUA"
     sed -i 's/, cm = "dp3"//; s/cm = "dp3"/cm = "auto"/; s/, bitdepth = 10//' "$MONITORS_LUA"
 }
 mod_color_remove() {
     [[ -f "$MONITORS_LUA" ]] || return 0
+    local rule
+    rule=$(color_block | sed -n 's/^\(hl\.monitor(.*\), cm = "dp3", bitdepth = 10 })$/\1 })/p' | head -1)
+    [[ -n $rule ]] || rule=$(color_kept_rule)   # removed before: keep it as it is
     cp "$MONITORS_LUA" "${MONITORS_LUA}.bak-$(date +%s)"
     mod_color_remove_lua
+    [[ -n $rule ]] && printf '\n%s\n%s\n' "$COLOR_KEPT" "$rule" >>"$MONITORS_LUA"
     command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
 }
 
@@ -841,8 +853,10 @@ mod_boot_detect() {
         [[ -s $p ]] && echo yes || echo no')"
     hook=no; [[ -x $HYGIENE_HOOK ]] && hook=yes
 
+    # A clean layout without the hook is a stock install that has not gone
+    # wrong yet (and what --remove leaves), so only the hook makes it ours.
     if [[ $shadows == 0 && $fallback_uki == no && $hook == yes ]]; then echo applied
-    elif [[ $shadows == 0 && $fallback_uki == no ]]; then echo partial
+    elif [[ $hook == yes ]]; then echo partial
     else echo not-applied; fi
 }
 
