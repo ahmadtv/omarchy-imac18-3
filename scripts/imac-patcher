@@ -770,7 +770,9 @@ mod_macos_apply() {
     grep -q 'hypr.imac-gpu' "$MACOS_HYPR_MAIN" 2>/dev/null || \
         sed -i 's|^require("hypr.monitors")|require("hypr.imac-gpu") -- Radeon stays the desktop GPU when the Intel iGPU is exposed\nrequire("hypr.monitors")|' "$MACOS_HYPR_MAIN"
     macos_drop_old_loader
-    sync_boot_files || return 1
+    boot_sync_later after_macos_apply
+}
+after_macos_apply() {   # runs once the boot image is rebuilt (boot_sync_flush)
     # One menu: no "EFI fallback" entry (it only re-starts Limine). The fallback FILE
     # EFI/BOOT/BOOTX64.EFI stays (ENABLE_LIMINE_FALLBACK) for booting without OpenCore.
     grep -q "^FIND_BOOTLOADERS=no" "$LIMINE_DEFAULT" ||
@@ -811,8 +813,13 @@ mod_macos_remove() {
     fi
     macos_drop_find_bootloaders
     sed -i '/require("hypr.imac-gpu")/d' "$MACOS_HYPR_MAIN" 2>/dev/null; rm -f "$MACOS_HYPR"
-    sync_boot_files && verify_cmdline "" 'i915.vbt_firmware'
+    boot_sync_later after_macos_remove
+}
+after_macos_remove() {
+    local rc=0
+    verify_cmdline "" 'i915.vbt_firmware' || rc=1
     say "reboot to return to the plain boot (Intel iGPU hidden, brightness fixed at the firmware level)"
+    return $rc
 }
 
 # ═══════════════════════ module: suspend ═══════════════════════════════════
@@ -1006,14 +1013,18 @@ mod_5k_apply() {
     confirm "Build and install the patched amdgpu module?" || return 1
     fallback_snapshot "5k" || return 1
     local log="$LOGDIR/apply-5k-$(date +%Y%m%d-%H%M%S).log"
-    sudo "$INSTALLER_5K" --kernel "$TARGET_KREL" 2>&1 | tee "$log" || return 1
+    sudo "$INSTALLER_5K" --no-initramfs --kernel "$TARGET_KREL" 2>&1 | tee "$log" || return 1
     if grep -q "$VIDEO_4K" "$LIMINE_DEFAULT" 2>/dev/null && confirm "Remove the 4K fallback parameter (required for real 5K)?"; then
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-pre5k-$(date +%s)"
         sudo sed -i "s| ${VIDEO_4K}||" "$LIMINE_DEFAULT"
     fi
-    sync_boot_files && verify_cmdline 'amdgpu.tiled_stitch=1' "$VIDEO_4K"
+    boot_sync_later after_5k_apply
+}
+after_5k_apply() {
+    local rc=0
+    verify_cmdline 'amdgpu.tiled_stitch=1' "$VIDEO_4K" || rc=1
     say "reboot to activate"
-    return 0
+    return $rc
 }
 mod_5k_remove() {
     local k
@@ -1021,7 +1032,7 @@ mod_5k_remove() {
     for k in "$KREL" "$TARGET_KREL"; do
         [[ $k == "$KREL" ]] || kernel_pending || continue
         amdgpu_patched_for "$k" || continue
-        sudo "$INSTALLER_5K" --restore --kernel "$k" || return 1
+        sudo "$INSTALLER_5K" --restore --no-initramfs --kernel "$k" || return 1
     done
     if grep -q 'amdgpu.tiled_stitch=1' "$LIMINE_DEFAULT" 2>/dev/null; then
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-restore-$(date +%s)"
@@ -1030,8 +1041,13 @@ mod_5k_remove() {
     if ! grep -q "$VIDEO_4K" "$LIMINE_DEFAULT" 2>/dev/null && confirm "Re-add the 4K fallback (recommended without 5K)?"; then
         limine_cmdline_add "$VIDEO_4K"
     fi
-    sync_boot_files && verify_cmdline "" 'amdgpu.tiled_stitch=1'
+    boot_sync_later after_5k_remove
+}
+after_5k_remove() {
+    local rc=0
+    verify_cmdline "" 'amdgpu.tiled_stitch=1' || rc=1
     say "reboot to return to stock"
+    return $rc
 }
 
 # ── boot helpers ───────────────────────────────────────────────────────────
@@ -1085,6 +1101,35 @@ sync_boot_files() {
     fi
     sudo sync
 }
+# One rebuild per run. limine-mkinitcpio rebuilds the boot image of every
+# installed kernel, and each boot module used to run it itself (5K twice: in
+# its installer, then here), so `--apply all` and `--remove all` rebuilt
+# three times. A module now marks the rebuild as pending and queues what has
+# to wait for the new image (its checks read the cmdline embedded in it);
+# boot_sync_flush, at the end of the run, rebuilds once and runs them in
+# order. A run that stops before then says so on exit.
+BOOT_SYNC_PENDING=0
+BOOT_AFTER=()
+boot_sync_later() {   # boot_sync_later [function to run after the rebuild]
+    BOOT_SYNC_PENDING=1
+    (( $# )) && BOOT_AFTER+=("$1")
+    return 0
+}
+boot_sync_flush() {
+    (( BOOT_SYNC_PENDING )) || return 0
+    local f rc=0
+    hdr "Rebuilding the boot image"
+    sync_boot_files || return 1
+    BOOT_SYNC_PENDING=0
+    for f in "${BOOT_AFTER[@]}"; do "$f" || rc=1; done
+    BOOT_AFTER=()
+    return $rc
+}
+boot_sync_warn_pending() {
+    (( BOOT_SYNC_PENDING )) || return 0
+    warn "the boot image was NOT rebuilt for the changes above: run  sudo limine-mkinitcpio  before you reboot"
+}
+trap boot_sync_warn_pending EXIT
 # ── fallback snapshot ─────────────────────────────────────────────────────
 # Before the first boot-tier change of a run, a Snapper snapshot of the system
 # as it is now, with a boot entry in Limine's Snapshots menu. If the default
@@ -1197,6 +1242,7 @@ remove_everything() {
         if [[ $st == applied || $st == partial ]]; then fallback_snapshot "remove all" || return 1; break; fi
     done
     for (( i = ${#MODULES[@]} - 1; i >= 0; i-- )); do run_module remove "${MODULES[i]}" || rc=1; done
+    boot_sync_flush || rc=1
     local caches=("${HOME}/.cache/kernel-5k-build" "$CACHE")
     if compgen -G "${HOME}/.cache/kernel-5k-build/*" >/dev/null || compgen -G "${CACHE}/*" >/dev/null; then
         confirm "Delete the build caches ($(du -sch "${caches[@]}" 2>/dev/null | tail -1 | cut -f1): kernel source, driver source)?" &&
@@ -1236,6 +1282,7 @@ case "${1:-}" in
             [[ " ${MODULES[*]} " == *" $id "* ]] || { warn "unknown module: $id"; continue; }
             run_module "$action" "$id"
         done
+        boot_sync_flush || exit 1
         exit 0 ;;
     --force|"") ;;
     *) echo "usage: $0 [--status | --apply <id...|safe|all> | --remove <id...|safe|all>]"; exit 2 ;;
@@ -1280,3 +1327,4 @@ case "$sel" in
         confirm "Remove every change this patcher made (5K, macOS mode, audio, ...)?" && remove_everything ;;
     *) exit 0 ;;
 esac
+boot_sync_flush

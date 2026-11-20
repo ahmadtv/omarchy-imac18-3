@@ -59,7 +59,7 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
 	cat <<EOF
-usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore]
+usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore] [--no-initramfs]
        $0 --patchset
 
   --kernel <release>  build for an installed kernel other than the running one,
@@ -71,6 +71,9 @@ usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore]
                       of coming up broken.
   --build-only        build as a normal user and stop before installing.
   --restore           put the stock amdgpu module back.
+  --no-initramfs      install (or restore) the module and the boot parameter,
+                      but leave rebuilding the initramfs/UKI to the caller.
+                      imac-patcher uses it to rebuild once per run.
   --patchset          print the patch set this script builds (no root needed).
 EOF
 }
@@ -79,11 +82,13 @@ EOF
 ARGS_GIVEN="$*"
 BUILD_ONLY=0
 RESTORE=0
+NO_INITRAMFS=0
 TARGET_KREL="${IMAC5K_KREL:-}"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--build-only) BUILD_ONLY=1 ;;
 	--restore)    RESTORE=1 ;;
+	--no-initramfs) NO_INITRAMFS=1 ;;
 	--patchset)   patchset_id; exit 0 ;;
 	--kernel)     TARGET_KREL="${2:-}"; shift
 	              [[ -n "$TARGET_KREL" ]] || die "--kernel needs a kernel release, e.g. --kernel ${RUNNING_KREL}" ;;
@@ -122,8 +127,12 @@ if [[ $RESTORE -eq 1 ]]; then
 	cp -v "$BAK" "$AMDKO"
 	rm -f "$(dirname "$AMDKO")/${PATCHSET_FILE}"
 	depmod "$KREL"
-	say "rebuilding initramfs"
-	if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+	if (( NO_INITRAMFS )); then
+		say "initramfs not rebuilt (--no-initramfs): the caller rebuilds it"
+	else
+		say "rebuilding initramfs"
+		if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+	fi
 	say "done — reboot to run the stock module. (You may also want to remove amdgpu.tiled_stitch from your cmdline.)"
 	exit 0
 fi
@@ -373,40 +382,47 @@ if ! grep -q 'amdgpu.tiled_stitch=1' /etc/default/limine 2>/dev/null; then
 		|| printf '\033[1;31mWARNING:\033[0m could not add amdgpu.tiled_stitch=1 to /etc/default/limine (no KERNEL_CMDLINE[default] line) -- add it by hand\n' >&2
 fi
 
-say "rebuilding initramfs (bakes the patched module in)"
-if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+if (( NO_INITRAMFS )); then
+	# The caller (imac-patcher) rebuilds once for its whole run, and its
+	# rebuild also removes shadowing configs and refreshes an old
+	# UKI-over-fallback copy -- the rest of this section.
+	say "initramfs not rebuilt (--no-initramfs): the caller rebuilds it"
+else
+	say "rebuilding initramfs (bakes the patched module in)"
+	if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
 
-# Remove shadowing limine.conf copies. Limine >= 10.3.0 loads the FIRST config
-# in its search order, so a copy at EFI/limine/ or EFI/BOOT/ overrides
-# /boot/limine.conf -- the file limine-mkinitcpio actually maintains. Earlier
-# versions of this script created them; `limine-install` flags them as
-# conflicts and says to delete them.
-for shadow in /boot/EFI/limine/limine.conf /boot/EFI/BOOT/limine.conf \
-	/boot/boot/limine/limine.conf /boot/limine/limine.conf; do
-	[[ -f $shadow ]] || continue
-	say "removing shadowing config $shadow"
-	rm -f "$shadow"
-done
+	# Remove shadowing limine.conf copies. Limine >= 10.3.0 loads the FIRST config
+	# in its search order, so a copy at EFI/limine/ or EFI/BOOT/ overrides
+	# /boot/limine.conf -- the file limine-mkinitcpio actually maintains. Earlier
+	# versions of this script created them; `limine-install` flags them as
+	# conflicts and says to delete them.
+	for shadow in /boot/EFI/limine/limine.conf /boot/EFI/BOOT/limine.conf \
+		/boot/boot/limine/limine.conf /boot/limine/limine.conf; do
+		[[ -f $shadow ]] || continue
+		say "removing shadowing config $shadow"
+		rm -f "$shadow"
+	done
 
-# Refresh the fallback boot path too. On machines still using the old bypass,
-# \EFI\BOOT\BOOTX64.EFI is a COPY of the UKI (an earlier bypass of Limine), not the Limine binary — so if
-# the firmware takes the fallback path it boots whatever UKI was current when
-# that copy was made. Leaving it stale means booting the previous initramfs,
-# with the previous amdgpu module baked in, and wondering why nothing changed.
-# Only refresh it when it really is a UKI copy; never clobber a Limine binary.
-UKI="/boot/EFI/Linux/omarchy_${PKGBASE}.efi"   # omarchy_linux-omarchy.efi on linux-omarchy
-FALLBACK=/boot/EFI/BOOT/BOOTX64.EFI
-# NB: `objcopy --only-section=X` exits 0 even when section X is absent -- it
-# writes nothing. Testing its exit status classifies every PE binary as a UKI,
-# which on a stock ESP means overwriting Limine with a kernel image.
-if [[ -f "$UKI" && -f "$FALLBACK" ]]; then
-	probe="$(mktemp)"
-	objcopy -O binary --only-section=.cmdline "$FALLBACK" "$probe" 2>/dev/null || true
-	if [[ -s $probe ]] && ! cmp -s "$UKI" "$FALLBACK"; then
-		say "refreshing UKI-bypass fallback $FALLBACK from the new UKI"
-		cp -f "$UKI" "$FALLBACK"
+	# Refresh the fallback boot path too. On machines still using the old bypass,
+	# \EFI\BOOT\BOOTX64.EFI is a COPY of the UKI (an earlier bypass of Limine), not the Limine binary — so if
+	# the firmware takes the fallback path it boots whatever UKI was current when
+	# that copy was made. Leaving it stale means booting the previous initramfs,
+	# with the previous amdgpu module baked in, and wondering why nothing changed.
+	# Only refresh it when it really is a UKI copy; never clobber a Limine binary.
+	UKI="/boot/EFI/Linux/omarchy_${PKGBASE}.efi"   # omarchy_linux-omarchy.efi on linux-omarchy
+	FALLBACK=/boot/EFI/BOOT/BOOTX64.EFI
+	# NB: `objcopy --only-section=X` exits 0 even when section X is absent -- it
+	# writes nothing. Testing its exit status classifies every PE binary as a UKI,
+	# which on a stock ESP means overwriting Limine with a kernel image.
+	if [[ -f "$UKI" && -f "$FALLBACK" ]]; then
+		probe="$(mktemp)"
+		objcopy -O binary --only-section=.cmdline "$FALLBACK" "$probe" 2>/dev/null || true
+		if [[ -s $probe ]] && ! cmp -s "$UKI" "$FALLBACK"; then
+			say "refreshing UKI-bypass fallback $FALLBACK from the new UKI"
+			cp -f "$UKI" "$FALLBACK"
+		fi
+		rm -f "$probe"
 	fi
-	rm -f "$probe"
 fi
 sync
 

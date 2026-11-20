@@ -4,6 +4,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 
 ## 2026-11-20
 
+- **One boot image rebuild per run.** `--apply all` and `--remove all` rebuilt the boot image (every installed kernel's) three times: once for macOS mode and twice for 5K, in its installer and again in the patcher. The patcher now rebuilds once, after the last module of the run, and then checks the new image: the boot options each module expects, and for macOS mode its iMac18,3 entry. If a run stops before that, it says so on exit: run `sudo limine-mkinitcpio` before rebooting. Run on its own, `patch-imac5k-amdgpu.sh` still rebuilds as before; the patcher calls it with the new `--no-initramfs`.
 - **`--remove color` keeps your scale.** Since the colour rule moved to its own block, the iMac panel's scale often lived only there, so removing wide-gamut colour dropped the panel back to Omarchy's default scale. Removal now leaves a plain `eDP-1` rule with the same scale (no P3, no 10-bit); applying colour again takes it back into the block.
 - **The status after `--remove` reads `not applied`.** Audio showed `partial` because the stock CS8409 driver loads on this board too (without speakers), and boot hygiene showed `partial` on any clean boot layout. Audio is now `partial` only when part of the DKMS driver is in place; boot hygiene only when its hook is installed but the layout has gone wrong again.
 
