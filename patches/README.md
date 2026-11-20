@@ -63,6 +63,11 @@ The installer applies these in order to pristine kernel source:
 - **`imac5k-stitch-hide-slave.patch`** — with the stitch on, the slave tile's
   connector reports disconnected, so compositors and settings panels see one
   display instead of offering the tile as a second output.
+- **`imac5k-stitch-peer-attach.patch`** — when a client turns the crtc on
+  with a new framebuffer in one commit (Plymouth's shutdown splash after the
+  compositor exits), the right tile gets its plane and buffer address too.
+  Before it, the right half stayed black and the splash logo was cut at the
+  seam.
 
 Then three fixes that aren't about 5K, carried in the same module build:
 
@@ -76,13 +81,26 @@ Then three fixes that aren't about 5K, carried in the same module build:
   suspend no longer aborts the reset. Reported with the patches as
   [drm/amd#5810](https://gitlab.freedesktop.org/drm/amd/-/issues/5810).
 
+Last, because it is cut against everything above:
+
+- **`imac5k-stitch-scaled-modes.patch`** — modes smaller than 5120x2880 on
+  the stitched panel (3840x2160 … 1280x720 are listed beside it). The panel
+  keeps its native tile timing, also on a wake from DPMS off; the picture is
+  placed by the connector's scaling property (aspect-fit by default), cut at
+  the tile seam and scaled onto each tile, and the peer tile's cursor is
+  offset by the root's source width. Before it, a smaller mode showed
+  squashed on the left tile with the right tile black, and a wake at one was
+  rejected.
+
 ```bash
 patch -p1 < patches/imac5k-lean-core-7.2.x.patch
 patch -p1 < patches/imac5k-stitch-layer-7.x.patch
 patch -p1 < patches/imac5k-stitch-hide-slave.patch
+patch -p1 < patches/imac5k-stitch-peer-attach.patch
 patch -p1 < patches/amdgpu-hpd-skip-during-reset.patch
 patch -p1 < patches/amdgpu-vce-suspend-in-reset.patch
 patch -p1 < patches/amdgpu-vce3-ring-align-mask.patch
+patch -p1 < patches/imac5k-stitch-scaled-modes.patch
 ```
 
 Audio is separate: **`cs8409-headset-capture.patch`** goes on top of the

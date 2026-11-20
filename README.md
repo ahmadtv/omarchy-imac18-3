@@ -115,7 +115,14 @@ The patcher shows what's applied, what isn't, and lets you pick — **nothing is
 ./scripts/imac-patcher --apply autobright  # brightness follows the room's light; learns from your own adjustments (wluma)
 ./scripts/imac-patcher --apply macos   # Intel iGPU for video + working, full-range brightness (kernel tells the firmware it's macOS)
 ./scripts/imac-patcher --remove 5k     # full undo, any time
+./scripts/imac-patcher --remove all    # undo every change (and offer to delete the build caches)
 ```
+
+The colour settings live in one marked rule for the iMac panel (`eDP-1`) at the end of `~/.config/hypr/monitors.lua`, written the way Omarchy writes its own monitor rules, so Omarchy's monitor handling at login and wake (4.5) keeps them, and external monitors stay sRGB.
+
+**Several kernels installed?** The patcher builds for the kernel the *default* boot entry starts (the first in Limine's `BOOT_ORDER`: `linux-omarchy` on Omarchy 4.x), not the newest version number, so Arch's `linux` or `linux-lts` can stay as plain fallbacks.
+
+**Want a 4K-size desktop on 5K?** Keep the panel at 5120×2880 and use scale 1.333333 in its `monitors.lua` rule: the same workspace at full sharpness. Smaller resolutions (3840×2160, 2560×1440, 1920×1080, …) are listed too and work: the panel stays at its native timing and the picture is scaled up to fill it, keeping its shape (16:10 sizes get thin bars at the sides). They are softer than 5K with a scale, so use them only when an app needs the real resolution.
 
 **The 5K module needs kernel 7.1.x or 7.2.x** and the patcher refuses anything else — a mis-applied GPU patch means a broken display, so a newer kernel must be re-ported by hand first. You supply nothing else: the installer fetches the matching kernel source itself (≈8 GB, ~20–40 min the first build; re-runs are fast).
 
@@ -139,7 +146,7 @@ The Radeon exposes only a **256 MiB CPU-visible slice** of its memory. Vulkan to
 
 ## 🛟 Safety
 
-Every patch backs up what it replaces and can be reversed. Boot-related changes print their recovery steps first. A new `amdgpu` build never has to replace the working one to be tried — `scripts/imac-alt-entry` boots it from its own hash-pinned Limine entry with the default untouched. See [`patches/README.md`](patches/README.md).
+Every patch backs up what it replaces and can be reversed; `--remove all` (or **Remove everything** in the menu) takes them all back. Boot-related changes print their recovery steps first, and before the first one in a run the patcher takes a **fallback snapshot** with Snapper: it shows in the boot menu under **Snapshots** as "imac-patcher: before …", and boots the system exactly as it was, kernel image included. If the default entry ever fails to bring the desktop up, pick it; `sudo limine-snapper-restore` then makes it the system again. The newest two are kept, and Omarchy's own snapshot cleanup leaves them alone. (A snapshot boot is read-only, so the patcher refuses to change anything from one.) A new `amdgpu` build never has to replace the working one to be tried — `scripts/imac-alt-entry` boots it from its own hash-pinned Limine entry with the default untouched. See [`patches/README.md`](patches/README.md).
 
 ## 🔬 Under the hood
 
