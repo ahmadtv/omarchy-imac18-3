@@ -31,14 +31,26 @@ set -euo pipefail
 PATCH_KVER_SUPPORTED="7.1 7.2"   # kernel series this patch is verified to apply to
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The stack: the lean core (the upstream candidate), then the stitch layer that
-# presents both tiles as one output, then its one-display fix. Each must apply
-# cleanly to pristine source, in this order, or nothing is installed.
+# presents both tiles as one output, then its one-display and right-tile plane
+# fixes. Each must apply cleanly to pristine source, in this order, or nothing
+# is installed.
 PATCH_FILE="${SCRIPT_DIR}/../patches/imac5k-lean-core-7.2.x.patch"
 EXTRA_PATCHES=("${SCRIPT_DIR}/../patches/imac5k-stitch-layer-7.x.patch"
 	"${SCRIPT_DIR}/../patches/imac5k-stitch-hide-slave.patch"
+	"${SCRIPT_DIR}/../patches/imac5k-stitch-peer-attach.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-hpd-skip-during-reset.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-vce-suspend-in-reset.patch"
 	"${SCRIPT_DIR}/../patches/amdgpu-vce3-ring-align-mask.patch")
+# The patch set as a list of name.hash lines. Written next to the installed
+# module, so the patcher can tell a module built from an older patch set (one
+# that a fix has since changed) from a current one, and rebuild it.
+patchset_id() {
+	local f
+	for f in "$PATCH_FILE" "${EXTRA_PATCHES[@]}"; do
+		printf '%s.%s\n' "$(basename "$f")" "$(sha256sum "$f" | cut -c1-16)"
+	done
+}
+PATCHSET_FILE=amdgpu.imac5k-patchset   # beside amdgpu.ko*; not matched by amdgpu.ko*
 WORK="${IMAC5K_WORK:-$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)/.cache/kernel-5k-build}"
 RUNNING_KREL="$(uname -r)"                # e.g. 7.2.2-arch1-1
 
@@ -47,7 +59,8 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
 	cat <<EOF
-usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore]
+usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore] [--no-initramfs]
+       $0 --patchset
 
   --kernel <release>  build for an installed kernel other than the running one,
                       e.g. --kernel 7.2.3-arch1-3.  "latest" picks the newest
@@ -58,6 +71,10 @@ usage: sudo $0 [--kernel <release>|latest] [--build-only] [--restore]
                       of coming up broken.
   --build-only        build as a normal user and stop before installing.
   --restore           put the stock amdgpu module back.
+  --no-initramfs      install (or restore) the module and the boot parameter,
+                      but leave rebuilding the initramfs/UKI to the caller.
+                      imac-patcher uses it to rebuild once per run.
+  --patchset          print the patch set this script builds (no root needed).
 EOF
 }
 
@@ -65,11 +82,14 @@ EOF
 ARGS_GIVEN="$*"
 BUILD_ONLY=0
 RESTORE=0
+NO_INITRAMFS=0
 TARGET_KREL="${IMAC5K_KREL:-}"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--build-only) BUILD_ONLY=1 ;;
 	--restore)    RESTORE=1 ;;
+	--no-initramfs) NO_INITRAMFS=1 ;;
+	--patchset)   patchset_id; exit 0 ;;
 	--kernel)     TARGET_KREL="${2:-}"; shift
 	              [[ -n "$TARGET_KREL" ]] || die "--kernel needs a kernel release, e.g. --kernel ${RUNNING_KREL}" ;;
 	--kernel=*)   TARGET_KREL="${1#*=}" ;;
@@ -105,9 +125,14 @@ if [[ $RESTORE -eq 1 ]]; then
 	[[ -f "$BAK" ]] || die "no backup found at ${BAK} — nothing to restore"
 	say "restoring stock amdgpu module"
 	cp -v "$BAK" "$AMDKO"
+	rm -f "$(dirname "$AMDKO")/${PATCHSET_FILE}"
 	depmod "$KREL"
-	say "rebuilding initramfs"
-	if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+	if (( NO_INITRAMFS )); then
+		say "initramfs not rebuilt (--no-initramfs): the caller rebuilds it"
+	else
+		say "rebuilding initramfs"
+		if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+	fi
 	say "done — reboot to run the stock module. (You may also want to remove amdgpu.tiled_stitch from your cmdline.)"
 	exit 0
 fi
@@ -131,10 +156,19 @@ EOF
 fi
 
 command -v gcc >/dev/null || die "install build tools first:  pacman -S --needed base-devel bc cpio pahole"
-[[ -e "$BUILDLINK/Module.symvers" ]] || die "install kernel headers first:  pacman -S linux-headers  (needed so the module matches this kernel)"
+[[ -e "$BUILDLINK/Module.symvers" ]] || die "install kernel headers first:  pacman -S ${PKGBASE}-headers  (needed so the module matches this kernel)"
 
 # ── fetch matching kernel source (for the driver .c files) ─────────────────
-mkdir -p "$WORK"; cd "$WORK"
+# The cache lives in the invoking user's home, and omarchy-pkgs is cloned into
+# it as that user (prepare_base_patches): create it as them. One a run made as
+# root (this line did that before) is handed back, or the clone cannot write.
+if [[ $EUID -eq 0 && -n ${SUDO_USER:-} ]]; then
+	sudo -u "$SUDO_USER" mkdir -p "$WORK" 2>/dev/null || mkdir -p "$WORK"
+	[[ $(stat -c %U "$WORK") == root ]] && chown "$SUDO_USER:" "$WORK"
+else
+	mkdir -p "$WORK"
+fi
+cd "$WORK"
 SRC="linux-${KVER}"
 STAMPDIR=".imac5k-applied"
 
@@ -195,12 +229,9 @@ prepare_base_patches() {
 prepare_base_patches
 
 expected_stamps() {
-	local f
-	for f in "$PATCH_FILE" "${EXTRA_PATCHES[@]}"; do
-		printf '%s.%s\n' "$(basename "$f")" "$(sha256sum "$f" | cut -c1-16)"
-	done
+	patchset_id
 	[[ -z $BASE_ID ]] || printf '%s\n' "$BASE_ID"
-} 
+}
 sorted_expected_stamps() { expected_stamps | sort; }
 if [[ -d "$SRC" ]]; then
 	if [[ "$(ls "$SRC/$STAMPDIR" 2>/dev/null | sort)" != "$(sorted_expected_stamps)" ]]; then
@@ -336,49 +367,62 @@ case "$AMDKO" in
 	*.xz)  xz  -c "$BUILT" > "$AMDKO" ;;
 	*)     cp "$BUILT" "$AMDKO" ;;
 esac
+patchset_id > "$(dirname "$AMDKO")/${PATCHSET_FILE}"
 depmod "$KREL"
 
 # ── add the boot parameter (Limine) ────────────────────────────────────────
 if ! grep -q 'amdgpu.tiled_stitch=1' /etc/default/limine 2>/dev/null; then
 	say "adding amdgpu.tiled_stitch=1 to the default cmdline"
 	cp /etc/default/limine "/etc/default/limine.backup-5k-$(date +%s)"
-	sed -i 's/\(KERNEL_CMDLINE\[default\]="[^"]*\)"/\1 amdgpu.tiled_stitch=1"/' /etc/default/limine
+	# Omarchy writes `KERNEL_CMDLINE[default]+="..."` (append; 4.5 keeps its
+	# other options in /etc/limine-entry-tool.d/), older setups `=`. Match
+	# both, and only the first such line, so the option is added once.
+	sed -i '0,/^KERNEL_CMDLINE\[default\]+\?="/s/^\(KERNEL_CMDLINE\[default\]+\?="[^"]*\)"/\1 amdgpu.tiled_stitch=1"/' /etc/default/limine
+	grep -q 'amdgpu.tiled_stitch=1' /etc/default/limine \
+		|| printf '\033[1;31mWARNING:\033[0m could not add amdgpu.tiled_stitch=1 to /etc/default/limine (no KERNEL_CMDLINE[default] line) -- add it by hand\n' >&2
 fi
 
-say "rebuilding initramfs (bakes the patched module in)"
-if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
+if (( NO_INITRAMFS )); then
+	# The caller (imac-patcher) rebuilds once for its whole run, and its
+	# rebuild also removes shadowing configs and refreshes an old
+	# UKI-over-fallback copy -- the rest of this section.
+	say "initramfs not rebuilt (--no-initramfs): the caller rebuilds it"
+else
+	say "rebuilding initramfs (bakes the patched module in)"
+	if command -v limine-mkinitcpio >/dev/null; then limine-mkinitcpio; else mkinitcpio -P; fi
 
-# Remove shadowing limine.conf copies. Limine >= 10.3.0 loads the FIRST config
-# in its search order, so a copy at EFI/limine/ or EFI/BOOT/ overrides
-# /boot/limine.conf -- the file limine-mkinitcpio actually maintains. Earlier
-# versions of this script created them; `limine-install` flags them as
-# conflicts and says to delete them.
-for shadow in /boot/EFI/limine/limine.conf /boot/EFI/BOOT/limine.conf \
-	/boot/boot/limine/limine.conf /boot/limine/limine.conf; do
-	[[ -f $shadow ]] || continue
-	say "removing shadowing config $shadow"
-	rm -f "$shadow"
-done
+	# Remove shadowing limine.conf copies. Limine >= 10.3.0 loads the FIRST config
+	# in its search order, so a copy at EFI/limine/ or EFI/BOOT/ overrides
+	# /boot/limine.conf -- the file limine-mkinitcpio actually maintains. Earlier
+	# versions of this script created them; `limine-install` flags them as
+	# conflicts and says to delete them.
+	for shadow in /boot/EFI/limine/limine.conf /boot/EFI/BOOT/limine.conf \
+		/boot/boot/limine/limine.conf /boot/limine/limine.conf; do
+		[[ -f $shadow ]] || continue
+		say "removing shadowing config $shadow"
+		rm -f "$shadow"
+	done
 
-# Refresh the fallback boot path too. On machines still using the old bypass,
-# \EFI\BOOT\BOOTX64.EFI is a COPY of the UKI (an earlier bypass of Limine), not the Limine binary — so if
-# the firmware takes the fallback path it boots whatever UKI was current when
-# that copy was made. Leaving it stale means booting the previous initramfs,
-# with the previous amdgpu module baked in, and wondering why nothing changed.
-# Only refresh it when it really is a UKI copy; never clobber a Limine binary.
-UKI=/boot/EFI/Linux/omarchy_linux.efi
-FALLBACK=/boot/EFI/BOOT/BOOTX64.EFI
-# NB: `objcopy --only-section=X` exits 0 even when section X is absent -- it
-# writes nothing. Testing its exit status classifies every PE binary as a UKI,
-# which on a stock ESP means overwriting Limine with a kernel image.
-if [[ -f "$UKI" && -f "$FALLBACK" ]]; then
-	probe="$(mktemp)"
-	objcopy -O binary --only-section=.cmdline "$FALLBACK" "$probe" 2>/dev/null || true
-	if [[ -s $probe ]] && ! cmp -s "$UKI" "$FALLBACK"; then
-		say "refreshing UKI-bypass fallback $FALLBACK from the new UKI"
-		cp -f "$UKI" "$FALLBACK"
+	# Refresh the fallback boot path too. On machines still using the old bypass,
+	# \EFI\BOOT\BOOTX64.EFI is a COPY of the UKI (an earlier bypass of Limine), not the Limine binary — so if
+	# the firmware takes the fallback path it boots whatever UKI was current when
+	# that copy was made. Leaving it stale means booting the previous initramfs,
+	# with the previous amdgpu module baked in, and wondering why nothing changed.
+	# Only refresh it when it really is a UKI copy; never clobber a Limine binary.
+	UKI="/boot/EFI/Linux/omarchy_${PKGBASE}.efi"   # omarchy_linux-omarchy.efi on linux-omarchy
+	FALLBACK=/boot/EFI/BOOT/BOOTX64.EFI
+	# NB: `objcopy --only-section=X` exits 0 even when section X is absent -- it
+	# writes nothing. Testing its exit status classifies every PE binary as a UKI,
+	# which on a stock ESP means overwriting Limine with a kernel image.
+	if [[ -f "$UKI" && -f "$FALLBACK" ]]; then
+		probe="$(mktemp)"
+		objcopy -O binary --only-section=.cmdline "$FALLBACK" "$probe" 2>/dev/null || true
+		if [[ -s $probe ]] && ! cmp -s "$UKI" "$FALLBACK"; then
+			say "refreshing UKI-bypass fallback $FALLBACK from the new UKI"
+			cp -f "$UKI" "$FALLBACK"
+		fi
+		rm -f "$probe"
 	fi
-	rm -f "$probe"
 fi
 sync
 

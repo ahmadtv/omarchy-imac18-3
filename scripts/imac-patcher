@@ -15,8 +15,8 @@
 # Usage:
 #   imac-patcher                 interactive
 #   imac-patcher --status        print status of every module
-#   imac-patcher --apply  <id..> apply named modules (or "safe" for all safe ones)
-#   imac-patcher --remove <id..> remove named modules
+#   imac-patcher --apply  <id..> apply named modules ("safe": all safe ones, "all": every one)
+#   imac-patcher --remove <id..> remove named modules ("all": every change, and the build caches)
 #
 set -uo pipefail
 
@@ -29,20 +29,52 @@ LOGDIR="${HOME}/.local/state/imac-patcher"
 CACHE="${HOME}/.cache/imac-patcher"
 KREL="$(uname -r)"
 KSERIES="$(uname -r | cut -d. -f1-2)"
-# The newest installed kernel. It differs from the running one after a distro
-# kernel upgrade, before the reboot -- and that gap is exactly when the patched
-# modules have to be built, so they are already in place on its first boot
-# instead of the machine coming up with a broken display and no sound.
-newest_kernel() { local d; for d in /usr/lib/modules/*/kernel; do d="${d%/kernel}"; basename "$d"; done | sort -V | tail -1; }
-TARGET_KREL="$(newest_kernel)"; TARGET_KREL="${TARGET_KREL:-$KREL}"
+# The kernel the default boot entry starts: the newest installed release of
+# the first package in Limine's BOOT_ORDER (linux-omarchy on Omarchy 4.x), not
+# simply the highest version -- Arch's linux or linux-lts can sit beside it as
+# fallbacks, and the default entry is the one that has to come up patched.
+# It differs from the running kernel after a kernel upgrade, before the reboot
+# -- exactly when the patched modules have to be built, so they are in place
+# on its first boot instead of the machine coming up without 5K or sound.
+# BOOT_ORDER is read in limine-entry-tool's own order, last one wins:
+# /usr/share drop-ins, /etc/limine-entry-tool.conf, /etc drop-ins (Omarchy 4.5
+# sets it there), /etc/default/limine. With no BOOT_ORDER, or none of its
+# packages installed, it is the highest version, as before.
+boot_order() {
+    sed -n 's/^BOOT_ORDER="\(.*\)"/\1/p' /usr/share/limine-entry-tool.d/*.conf \
+        /etc/limine-entry-tool.conf /etc/limine-entry-tool.d/*.conf "$LIMINE_DEFAULT" 2>/dev/null | tail -1
+}
+installed_kernels() { local d; for d in /usr/lib/modules/*/kernel; do d="${d%/kernel}"; basename "$d"; done | sort -V; }
+default_kernel() {
+    local tok toks k
+    IFS=', ' read -ra toks <<<"$(boot_order)"
+    for tok in "${toks[@]}"; do
+        [[ -z $tok || $tok == *[*?]* ]] && continue
+        for k in $(installed_kernels | tac); do
+            [[ $(cat "/usr/lib/modules/$k/pkgbase" 2>/dev/null) == "$tok" ]] && { echo "$k"; return; }
+        done
+    done
+    installed_kernels | tail -1
+}
+LIMINE_DEFAULT=/etc/default/limine
+TARGET_KREL="$(default_kernel)"; TARGET_KREL="${TARGET_KREL:-$KREL}"
 TARGET_KSERIES="$(cut -d. -f1-2 <<<"$TARGET_KREL")"
 kernel_pending() { [[ "$TARGET_KREL" != "$KREL" ]]; }
 SUPPORTED_5K_SERIES="7.1 7.2"
-LIMINE_DEFAULT=/etc/default/limine
+# Append options to the default kernel cmdline in $LIMINE_DEFAULT. Omarchy
+# writes `KERNEL_CMDLINE[default]+="..."` (4.5 keeps the rest in
+# /etc/limine-entry-tool.d/), older setups `=`: match both, first line only.
+limine_cmdline_add() {   # limine_cmdline_add "<options>"
+    sudo sed -i "0,/^KERNEL_CMDLINE\[default\]+\?=\"/s|^\(KERNEL_CMDLINE\[default\]+\?=\"[^\"]*\)\"|\1 $1\"|" "$LIMINE_DEFAULT" &&
+        sudo grep -qF -- "$1" "$LIMINE_DEFAULT" ||
+        { warn "could not add '$1' to $LIMINE_DEFAULT (no KERNEL_CMDLINE[default] line)"; return 1; }
+}
 VIDEO_4K='video=eDP-1:3840x2160@60e'
 MONITORS_LUA="${HOME}/.config/hypr/monitors.lua"
 SLEEP_TARGETS=(suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target)
 mkdir -p "$LOGDIR" "$CACHE"
+# The headers package for a kernel: linux-omarchy-headers for linux-omarchy.
+headers_pkg() { echo "$(cat "/usr/lib/modules/$1/pkgbase" 2>/dev/null || echo linux)-headers"; }
 
 # The hardware of one machine, and nothing else. Patches to apps -- Omarchy
 # plugins, third-party plugins -- are a different job with a different life:
@@ -135,7 +167,10 @@ mod_audio_detect() {
     if kernel_pending && ! audio_installed_is_ours "$TARGET_KREL"; then echo partial
     elif [[ -n $(audio_rival_dkms) ]]; then echo partial   # a second cs8409 driver will win the next kernel update
     elif (( dkms_ok && loaded && patched )); then echo applied
-    elif (( loaded )); then echo partial       # driver up, but unpatched and/or DKMS can't rebuild it
+    # Some of ours is in place but not all (not rebuilt, not loaded yet). The
+    # in-kernel cs8409 alone is the stock state: it loads here too, without
+    # speakers, so being loaded says nothing about this module.
+    elif (( dkms_ok || patched )); then echo partial
     else echo not-applied; fi
 }
 mod_audio_preflight() {
@@ -202,9 +237,9 @@ mod_audio_preflight() {
     if [[ -e "/usr/lib/modules/${TARGET_KREL}/build/Module.symvers" ]]; then
         say "kernel headers present"
     else
-        warn "linux-headers missing for ${TARGET_KREL} — the DKMS build would fail without them"
-        if confirm "Install linux-headers now?"; then
-            sudo pacman -S --needed --noconfirm linux-headers || ok=0
+        warn "$(headers_pkg "$TARGET_KREL") missing for ${TARGET_KREL} — the DKMS build would fail without them"
+        if confirm "Install $(headers_pkg "$TARGET_KREL") now?"; then
+            sudo pacman -S --needed --noconfirm "$(headers_pkg "$TARGET_KREL")" || ok=0
         else ok=0; fi
     fi
     return $(( 1 - ok ))
@@ -270,33 +305,73 @@ mod_audio_remove() {
 }
 
 # ═══════════════════════ module: color ═════════════════════════════════════
+# monitors.lua gets one marked rule for the iMac panel, in the form Omarchy
+# writes its own: output = "<connector>" (eDP-1) with a plain scale. Older
+# versions added cm/bitdepth to every existing rule, the catch-all included,
+# so external monitors turned P3 too. Why this form: Omarchy 4.5's monitor
+# sync (omarchy-hyprland-monitor-clamshell, at login and on every wake) reads
+# monitors.lua as text, takes the panel's scale from its connector-named rule
+# (else the catch-all), and when the live scale differs re-applies the panel
+# with mode/position/scale only -- which drops cm and bitdepth. A rule named
+# by connector that carries the panel's live scale gives it nothing to
+# correct; a rule matched any other way (desc:) is invisible to it. Releases
+# without that sync just load the rule, so one form serves every Lua-config
+# release (4.x); without monitors.lua the module is n/a, as before.
+COLOR_BEGIN="-- >>> imac-patcher: color"
+COLOR_END="-- <<< imac-patcher: color"
 mod_color_title() { echo "Wide-gamut colour"; }
 mod_color_tier()  { echo safe; }
-mod_color_desc()  { echo "The panel is Display P3 and 10-bit; Hyprland's default sRGB mode leaves everything oversaturated. Sets cm=\"dp3\" on the monitor."; }
+mod_color_desc()  { echo "The panel is Display P3 and 10-bit; Hyprland's default sRGB mode leaves everything oversaturated. Sets cm=\"dp3\" and 10-bit on the iMac panel only."; }
+# What --remove leaves: the panel rule without the colour keys, so the scale
+# (which after a migration lived only in our block) survives. Apply drops it
+# again, since the block carries the scale.
+COLOR_KEPT="-- imac-patcher: the iMac panel's scale, kept when wide-gamut colour was removed"
+color_block() { sed -n "\|^${COLOR_BEGIN}\$|,\|^${COLOR_END}\$|p" "$MONITORS_LUA"; }
+color_kept_rule() { sed -n "\|^${COLOR_KEPT}\$|{n;p}" "$MONITORS_LUA" | head -1; }
 mod_color_detect() {
     [[ -f "$MONITORS_LUA" ]] || { echo n/a; return; }
-    grep -q 'cm = "dp3"' "$MONITORS_LUA" && echo applied || echo not-applied
+    if color_block | grep -q 'cm = "dp3"'; then echo applied
+    # (what older versions wrote into the existing rules: re-apply moves it into the block)
+    elif grep -q 'cm = "dp3"' "$MONITORS_LUA"; then echo partial
+    else echo not-applied; fi
 }
 mod_color_apply() {
     [[ -f "$MONITORS_LUA" ]] || { warn "$MONITORS_LUA not found"; return 1; }
+    local name scale kept
+    # The iMac panel's connector and current scale, tab-separated.
+    IFS=$'\t' read -r name scale < <(hyprctl monitors all -j 2>/dev/null | python3 -c '
+import json, sys
+m = next((m for m in json.load(sys.stdin) if m.get("make", "").startswith("Apple") and m.get("model") == "iMac"), None)
+print(m["name"] + "\t" + format(m["scale"], "g") if m else "")')
+    [[ -n $name ]] || { warn "Hyprland reports no iMac panel -- run this inside the Hyprland session"; return 1; }
+    # The scale stays what the panel has now; a re-apply keeps the one in our
+    # block (it may have been tuned by hand), or in the rule --remove left.
+    kept=$( { color_block; color_kept_rule; } | sed -n 's/.*hl\.monitor(.*scale = \([0-9][0-9.]*\).*/\1/p' | head -1)
+    scale=${kept:-${scale:-1}}
+    [[ $scale =~ ^[0-9]+([.][0-9]+)?$ ]] || scale=1
     cp "$MONITORS_LUA" "${MONITORS_LUA}.bak-$(date +%s)"
-    if grep -q 'cm = "' "$MONITORS_LUA"; then
-        sed -i 's/cm = "[a-z0-9]*"/cm = "dp3"/' "$MONITORS_LUA"
-    else
-        # add cm to the active (uncommented) hl.monitor line
-        sed -i '/^hl\.monitor({/ s/ })$/, cm = "dp3" })/' "$MONITORS_LUA"
-    fi
-    grep -q 'cm = "dp3"' "$MONITORS_LUA" || { warn "could not edit $MONITORS_LUA — do it by hand"; return 1; }
-    # a 10-bit panel; declared for what it is, not as a fix
-    if grep -q 'bitdepth = ' "$MONITORS_LUA"; then sed -i 's/bitdepth = [0-9]*/bitdepth = 10/' "$MONITORS_LUA"
-    else sed -i '/^hl\.monitor({/ s/ })$/, bitdepth = 10 })/' "$MONITORS_LUA"; fi
+    mod_color_remove_lua
+    # "preferred" follows the panel to 5120x2880 once the 5K module runs.
+    printf '\n%s\n%s\n%s\n' "$COLOR_BEGIN" \
+        "hl.monitor({ output = \"${name}\", mode = \"preferred\", position = \"auto\", scale = ${scale}, cm = \"dp3\", bitdepth = 10 })" \
+        "$COLOR_END" >>"$MONITORS_LUA"
     command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
     say "applied: $(grep -o 'colorManagementPreset: .*' <(hyprctl monitors all 2>/dev/null) | head -1)"
 }
+# Our marked block, and what older versions wrote into the existing rules.
+mod_color_remove_lua() {
+    sed -i "\|^${COLOR_BEGIN}\$|,\|^${COLOR_END}\$|d; \|^${COLOR_KEPT}\$|{N;d}" "$MONITORS_LUA"
+    sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$MONITORS_LUA"
+    sed -i 's/, cm = "dp3"//; s/cm = "dp3"/cm = "auto"/; s/, bitdepth = 10//' "$MONITORS_LUA"
+}
 mod_color_remove() {
     [[ -f "$MONITORS_LUA" ]] || return 0
+    local rule
+    rule=$(color_block | sed -n 's/^\(hl\.monitor(.*\), cm = "dp3", bitdepth = 10 })$/\1 })/p' | head -1)
+    [[ -n $rule ]] || rule=$(color_kept_rule)   # removed before: keep it as it is
     cp "$MONITORS_LUA" "${MONITORS_LUA}.bak-$(date +%s)"
-    sed -i 's/, cm = "dp3"//; s/cm = "dp3"/cm = "auto"/' "$MONITORS_LUA"
+    mod_color_remove_lua
+    [[ -n $rule ]] && printf '\n%s\n%s\n' "$COLOR_KEPT" "$rule" >>"$MONITORS_LUA"
     command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1
 }
 
@@ -636,6 +711,7 @@ MACOS_NVRAM_BIN=/usr/local/bin/imac-backlight-nvram
 MACOS_NVRAM_UNIT=/etc/systemd/system/imac-backlight-nvram.service
 MACOS_HYPR="${HOME}/.config/hypr/imac-gpu.lua"
 MACOS_HYPR_MAIN="${HOME}/.config/hypr/hyprland.lua"
+MACOS_FB_MARK="# imac-patcher: macos (no EFI fallback entry)"
 mod_macos_title() { echo "macOS mode: Intel video + working brightness"; }
 mod_macos_tier()  { echo boot; }
 mod_macos_desc()  { echo "Makes the kernel tell the firmware it is starting macOS, as it already does for some MacBook Pros. That exposes the Intel HD 630, which then encodes and decodes video for every app that picks the first GPU (H.264 about 3.7x faster than the Radeon), and makes the brightness slider work -- over the panel's full range, starting at the saved level from power-on. The Radeon keeps the display and all 3D. Same single Omarchy boot entry, kept through kernel updates."; }
@@ -675,6 +751,7 @@ mod_macos_apply() {
     fi
     printf '\n\033[1mUndo at any time:\033[0m  %s --remove macos\n\n' "$0"
     confirm "Boot in macOS mode from now on?" || return 1
+    fallback_snapshot "macos" || return 1
     sudo install -Dm755 "$IG/linux-side/mkinitcpio/imac-setos" "$MACOS_HOOK" || return 1
     sudo install -Dm644 "$IG/linux-side/vbt/headless-vbt.bin" "$MACOS_VBT" || return 1
     for c in "${MACOS_RULES[@]}"; do sudo install -Dm644 "$IG/linux-side/udev/$c" "/etc/udev/rules.d/$c" || return 1; done
@@ -683,7 +760,7 @@ mod_macos_apply() {
     sudo install -Dm644 "$IG/linux-side/mkinitcpio/zz-imac-igpu.conf" "$MACOS_MKI" || return 1
     if ! grep -q 'i915.vbt_firmware=imac18-3' "$LIMINE_DEFAULT"; then
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-macos-$(date +%s)"
-        sudo sed -i "s|\(KERNEL_CMDLINE\[default\]=\"[^\"]*\)\"|\1 ${MACOS_OPTS}\"|" "$LIMINE_DEFAULT" || return 1
+        limine_cmdline_add "$MACOS_OPTS" || return 1
     fi
     sudo install -Dm755 "$IG/linux-side/bin/imac-backlight-nvram" "$MACOS_NVRAM_BIN" || return 1
     sudo install -Dm644 "$IG/linux-side/systemd/imac-backlight-nvram.service" "$MACOS_NVRAM_UNIT" || return 1
@@ -693,16 +770,37 @@ mod_macos_apply() {
     grep -q 'hypr.imac-gpu' "$MACOS_HYPR_MAIN" 2>/dev/null || \
         sed -i 's|^require("hypr.monitors")|require("hypr.imac-gpu") -- Radeon stays the desktop GPU when the Intel iGPU is exposed\nrequire("hypr.monitors")|' "$MACOS_HYPR_MAIN"
     macos_drop_old_loader
-    sync_boot_files || return 1
+    boot_sync_later after_macos_apply
+}
+after_macos_apply() {   # runs once the boot image is rebuilt (boot_sync_flush)
     # One menu: no "EFI fallback" entry (it only re-starts Limine). The fallback FILE
     # EFI/BOOT/BOOTX64.EFI stays (ENABLE_LIMINE_FALLBACK) for booting without OpenCore.
-    grep -q "^FIND_BOOTLOADERS=no" "$LIMINE_DEFAULT" || echo "FIND_BOOTLOADERS=no" | sudo tee -a "$LIMINE_DEFAULT" >/dev/null
+    grep -q "^FIND_BOOTLOADERS=no" "$LIMINE_DEFAULT" ||
+        printf '%s\nFIND_BOOTLOADERS=no\n' "$MACOS_FB_MARK" | sudo tee -a "$LIMINE_DEFAULT" >/dev/null
     sudo limine-entry-tool --remove-efi-path /boot/EFI/BOOT/BOOTX64.EFI --keep-files >/dev/null 2>&1 || true
     macos_uki_patched || { warn "the UKI does not list iMac18,3 -- see the imac-setos lines in the rebuild output"; return 1; }
     verify_cmdline 'i915.vbt_firmware=imac18-3' && say "reboot to boot in macOS mode"
 }
+# apply turns Limine's "EFI fallback" entry off with FIND_BOOTLOADERS=no, but
+# only when the file had no such line; remove takes back only the line apply
+# added: the one under our marker, or (written before the marker existed) one
+# the backup apply took first does not have. A line that was the user's or
+# their release's own stays. Without ours, the drop-ins decide again (Omarchy
+# 4.5 turns the entry back on).
+macos_drop_find_bootloaders() {
+    if grep -qxF "$MACOS_FB_MARK" "$LIMINE_DEFAULT"; then
+        sudo sed -i "\|^${MACOS_FB_MARK}\$|{N;/\nFIND_BOOTLOADERS=no\$/d}" "$LIMINE_DEFAULT"
+        sudo sed -i "\|^${MACOS_FB_MARK}\$|d" "$LIMINE_DEFAULT"
+        return 0
+    fi
+    local first; first="$(ls "${LIMINE_DEFAULT}".backup-macos-* 2>/dev/null | sort -t- -k3 -n | head -1)"
+    [[ -n $first ]] && ! grep -q '^FIND_BOOTLOADERS=no' "$first" &&
+        sudo sed -i '$!b;/^FIND_BOOTLOADERS=no$/d' "$LIMINE_DEFAULT"
+    return 0
+}
 mod_macos_remove() {
     local c
+    fallback_snapshot "removing macos" || return 1
     macos_drop_old_loader
     sudo rm -f "$MACOS_HOOK"
     sudo systemctl disable --now imac-backlight-nvram.service 2>/dev/null
@@ -713,9 +811,15 @@ mod_macos_remove() {
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-unmacos-$(date +%s)"
         sudo sed -i "s| ${MACOS_OPTS}||" "$LIMINE_DEFAULT"
     fi
+    macos_drop_find_bootloaders
     sed -i '/require("hypr.imac-gpu")/d' "$MACOS_HYPR_MAIN" 2>/dev/null; rm -f "$MACOS_HYPR"
-    sync_boot_files && verify_cmdline "" 'i915.vbt_firmware'
+    boot_sync_later after_macos_remove
+}
+after_macos_remove() {
+    local rc=0
+    verify_cmdline "" 'i915.vbt_firmware' || rc=1
     say "reboot to return to the plain boot (Intel iGPU hidden, brightness fixed at the firmware level)"
+    return $rc
 }
 
 # ═══════════════════════ module: suspend ═══════════════════════════════════
@@ -756,8 +860,10 @@ mod_boot_detect() {
         [[ -s $p ]] && echo yes || echo no')"
     hook=no; [[ -x $HYGIENE_HOOK ]] && hook=yes
 
+    # A clean layout without the hook is a stock install that has not gone
+    # wrong yet (and what --remove leaves), so only the hook makes it ours.
     if [[ $shadows == 0 && $fallback_uki == no && $hook == yes ]]; then echo applied
-    elif [[ $shadows == 0 && $fallback_uki == no ]]; then echo partial
+    elif [[ $hook == yes ]]; then echo partial
     else echo not-applied; fi
 }
 
@@ -775,6 +881,7 @@ Recovery: boot the OpenCore route or a Snapshot entry; restore with
   sudo cp /boot/EFI/BOOT/BOOTX64.UKI-bypass.backup /boot/EFI/BOOT/BOOTX64.EFI
 EOF
     confirm "Repair the boot configuration?" || return 1
+    fallback_snapshot "boot" || return 1
 
     sudo mkdir -p /boot/limine-conf-shadow-backup
     local f
@@ -802,6 +909,7 @@ EOF
 mod_boot_remove() {
     # The repaired layout is what stock Omarchy installs, so there is nothing
     # sensible to "undo" there; only the hook is ours to take back.
+    fallback_snapshot "removing boot" || return 1
     sudo rm -f "$HYGIENE_HOOK"
     say "hygiene hook removed; the ESP layout is left as stock Omarchy installs it"
     warn "to restore the old UKI-over-fallback bypass: sudo cp /boot/EFI/BOOT/BOOTX64.UKI-bypass.backup ${FALLBACK_PATH}"
@@ -811,23 +919,32 @@ mod_boot_remove() {
 mod_5k_title() { echo "Native 5K display"; }
 mod_5k_tier()  { echo boot; }
 mod_5k_desc()  { echo "Wakes the panel's second tile, stitches both into one 5120x2880 output and genlocks them. Rebuilds the amdgpu module for the kernel you will boot (stock module backed up)."; }
-# The stock backup sits next to the module we installed, so its presence is how
-# we tell a patched kernel tree from an untouched one -- for any kernel, not
-# just the running one.
+# The installed amdgpu module of a kernel, and whether it is our build: only
+# the patched module has the tiled_stitch parameter. (Asking the module itself
+# stays right after a restore, or a reinstall of the kernel package.)
+amdgpu_ko() { find "/usr/lib/modules/$1/kernel/drivers/gpu/drm/amd/amdgpu" -maxdepth 1 -name 'amdgpu.ko*' ! -name '*.stock-backup' 2>/dev/null | head -1; }
 amdgpu_patched_for() {   # amdgpu_patched_for <kernelrelease>
-    [[ -n "$(find "/usr/lib/modules/$1/kernel/drivers/gpu/drm/amd" -name 'amdgpu.ko*.stock-backup' 2>/dev/null | head -1)" ]]
+    local ko; ko="$(amdgpu_ko "$1")"
+    [[ -n $ko ]] && modinfo -F parm "$ko" 2>/dev/null | grep -q '^tiled_stitch:'
+}
+# ...and built from the patch set in this checkout. A fix to a patch changes
+# the set, and the module built before it has to be rebuilt.
+amdgpu_current_for() {   # amdgpu_current_for <kernelrelease>
+    amdgpu_patched_for "$1" &&
+        [[ "$(cat "/usr/lib/modules/$1/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.imac5k-patchset" 2>/dev/null)" == "$("$INSTALLER_5K" --patchset)" ]]
 }
 mod_5k_detect() {
-    local swapped=0 conf=0 live=0 res=""
-    amdgpu_patched_for "$KREL" && swapped=1
+    local built=0 conf=0 live=0 res=""
+    amdgpu_patched_for "$KREL" && built=1
     grep -q 'amdgpu.tiled_stitch=1' "$LIMINE_DEFAULT" 2>/dev/null && conf=1
     grep -q 'amdgpu.tiled_stitch=1' /proc/cmdline 2>/dev/null && live=1
     command -v hyprctl >/dev/null && res="$(hyprctl monitors 2>/dev/null | grep -oE '5120x2880' | head -1)"
-    # A pending kernel we have not built for is not "applied": the next boot
-    # loses 5K. Report partial so the menu offers it and --apply does not skip.
-    if kernel_pending && ! amdgpu_patched_for "$TARGET_KREL"; then echo partial
-    elif (( swapped && conf && live )) && [[ "$res" == "5120x2880" ]]; then echo applied
-    elif (( swapped || conf || live )); then echo partial
+    # Not "applied" while the kernel the next boot starts lacks a current build
+    # (not built yet, or built from an older patch set): report partial so the
+    # menu offers it and --apply does not skip it.
+    if (( built || conf )) && ! amdgpu_current_for "$TARGET_KREL"; then echo partial
+    elif (( built && conf && live )) && [[ "$res" == "5120x2880" ]]; then echo applied
+    elif (( built || conf || live )); then echo partial
     else echo not-applied; fi
 }
 mod_5k_preflight() {
@@ -864,9 +981,9 @@ mod_5k_preflight() {
     if [[ -e "/usr/lib/modules/${TARGET_KREL}/build/Module.symvers" ]]; then
         say "kernel headers present"
     else
-        warn "linux-headers missing for ${TARGET_KREL}"
-        if confirm "Install linux-headers now?"; then
-            sudo pacman -S --needed --noconfirm linux-headers || ok=0
+        warn "$(headers_pkg "$TARGET_KREL") missing for ${TARGET_KREL}"
+        if confirm "Install $(headers_pkg "$TARGET_KREL") now?"; then
+            sudo pacman -S --needed --noconfirm "$(headers_pkg "$TARGET_KREL")" || ok=0
         else ok=0; fi
     fi
     local free_gb
@@ -882,34 +999,55 @@ mod_5k_preflight() {
     return $(( 1 - ok ))
 }
 mod_5k_apply() {
+    # A current build already running: nothing to build, what is left is the
+    # display layout.
+    if ! kernel_pending && amdgpu_current_for "$KREL" && grep -q 'amdgpu.tiled_stitch=1' /proc/cmdline; then
+        say "the current patched module is running — only the display layout is left"
+        warn "Hyprland is not at 5120x2880: the iMac's rule in $MONITORS_LUA should ask for mode \"preferred\" (or 5120x2880)"
+        return 1
+    fi
+    amdgpu_patched_for "$TARGET_KREL" && ! amdgpu_current_for "$TARGET_KREL" &&
+        say "the installed 5K module was built from an older patch set — rebuilding it"
     mod_5k_preflight || { warn "preflight failed — nothing was changed."; return 1; }
     printf '\n\033[1mRestore at any time:\033[0m  %s --remove 5k\n\n' "$0"
     confirm "Build and install the patched amdgpu module?" || return 1
+    fallback_snapshot "5k" || return 1
     local log="$LOGDIR/apply-5k-$(date +%Y%m%d-%H%M%S).log"
-    sudo "$INSTALLER_5K" --kernel "$TARGET_KREL" 2>&1 | tee "$log" || return 1
+    sudo "$INSTALLER_5K" --no-initramfs --kernel "$TARGET_KREL" 2>&1 | tee "$log" || return 1
     if grep -q "$VIDEO_4K" "$LIMINE_DEFAULT" 2>/dev/null && confirm "Remove the 4K fallback parameter (required for real 5K)?"; then
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-pre5k-$(date +%s)"
         sudo sed -i "s| ${VIDEO_4K}||" "$LIMINE_DEFAULT"
     fi
-    sync_boot_files && verify_cmdline 'amdgpu.tiled_stitch=1' "$VIDEO_4K"
+    boot_sync_later after_5k_apply
+}
+after_5k_apply() {
+    local rc=0
+    verify_cmdline 'amdgpu.tiled_stitch=1' "$VIDEO_4K" || rc=1
     say "reboot to activate"
+    return $rc
 }
 mod_5k_remove() {
     local k
+    fallback_snapshot "removing 5k" || return 1
     for k in "$KREL" "$TARGET_KREL"; do
         [[ $k == "$KREL" ]] || kernel_pending || continue
         amdgpu_patched_for "$k" || continue
-        sudo "$INSTALLER_5K" --restore --kernel "$k" || return 1
+        sudo "$INSTALLER_5K" --restore --no-initramfs --kernel "$k" || return 1
     done
     if grep -q 'amdgpu.tiled_stitch=1' "$LIMINE_DEFAULT" 2>/dev/null; then
         sudo cp "$LIMINE_DEFAULT" "${LIMINE_DEFAULT}.backup-restore-$(date +%s)"
         sudo sed -i 's| amdgpu.tiled_stitch=1||' "$LIMINE_DEFAULT"
     fi
     if ! grep -q "$VIDEO_4K" "$LIMINE_DEFAULT" 2>/dev/null && confirm "Re-add the 4K fallback (recommended without 5K)?"; then
-        sudo sed -i "s|\(KERNEL_CMDLINE\[default\]=\"[^\"]*\)\"|\1 ${VIDEO_4K}\"|" "$LIMINE_DEFAULT"
+        limine_cmdline_add "$VIDEO_4K"
     fi
-    sync_boot_files && verify_cmdline "" 'amdgpu.tiled_stitch=1'
+    boot_sync_later after_5k_remove
+}
+after_5k_remove() {
+    local rc=0
+    verify_cmdline "" 'amdgpu.tiled_stitch=1' || rc=1
     say "reboot to return to stock"
+    return $rc
 }
 
 # ── boot helpers ───────────────────────────────────────────────────────────
@@ -963,6 +1101,77 @@ sync_boot_files() {
     fi
     sudo sync
 }
+# One rebuild per run. limine-mkinitcpio rebuilds the boot image of every
+# installed kernel, and each boot module used to run it itself (5K twice: in
+# its installer, then here), so `--apply all` and `--remove all` rebuilt
+# three times. A module now marks the rebuild as pending and queues what has
+# to wait for the new image (its checks read the cmdline embedded in it);
+# boot_sync_flush, at the end of the run, rebuilds once and runs them in
+# order. A run that stops before then says so on exit.
+BOOT_SYNC_PENDING=0
+BOOT_AFTER=()
+boot_sync_later() {   # boot_sync_later [function to run after the rebuild]
+    BOOT_SYNC_PENDING=1
+    (( $# )) && BOOT_AFTER+=("$1")
+    return 0
+}
+boot_sync_flush() {
+    (( BOOT_SYNC_PENDING )) || return 0
+    local f rc=0
+    hdr "Rebuilding the boot image"
+    sync_boot_files || return 1
+    BOOT_SYNC_PENDING=0
+    for f in "${BOOT_AFTER[@]}"; do "$f" || rc=1; done
+    BOOT_AFTER=()
+    return $rc
+}
+boot_sync_warn_pending() {
+    (( BOOT_SYNC_PENDING )) || return 0
+    warn "the boot image was NOT rebuilt for the changes above: run  sudo limine-mkinitcpio  before you reboot"
+}
+trap boot_sync_warn_pending EXIT
+# ── fallback snapshot ─────────────────────────────────────────────────────
+# Before the first boot-tier change of a run, a Snapper snapshot of the system
+# as it is now, with a boot entry in Limine's Snapshots menu. If the default
+# entry then fails to bring the desktop up, that entry boots the machine as it
+# was (its UKI is the one from before the change: the entry is synced here,
+# before the UKI is rebuilt). `sudo limine-snapper-restore` makes it permanent.
+# Ours carry no cleanup algorithm, so Omarchy's number cleanup (it prunes its
+# own update snapshots to NUMBER_LIMIT) never removes them; we keep the newest
+# two of ours ourselves, so they stay among the newest MAX_SNAPSHOT_ENTRIES
+# that Limine lists.
+SNAP_TAG="imac-patcher=fallback"
+SNAP_KEEP=2
+SNAPSHOT_TAKEN=0
+booted_from_snapshot() { [[ $(</proc/cmdline) == *rootflags=subvol=*/.snapshots/* ]]; }
+fallback_snapshot() {   # fallback_snapshot "<what is about to change>"
+    (( SNAPSHOT_TAKEN )) && return 0
+    if ! command -v snapper >/dev/null || ! sudo snapper -c root get-config >/dev/null 2>&1; then
+        warn "Snapper is not set up for /: no fallback snapshot can be taken"
+        confirm "Continue without a fallback snapshot?" || return 1
+        SNAPSHOT_TAKEN=1; return 0
+    fi
+    local n old
+    n="$(sudo snapper -c root create --print-number --userdata "$SNAP_TAG" \
+        --description "imac-patcher: before $1")" || { warn "could not create the fallback snapshot"; return 1; }
+    for old in $(sudo snapper --csvout -c root list --columns number,userdata 2>/dev/null |
+                 awk -F, -v tag="$SNAP_TAG" 'NR > 1 && index($2, tag) { print $1 }' | sort -n | head -n -"$SNAP_KEEP"); do
+        sudo snapper -c root delete "$old" && say "deleted older fallback snapshot #$old"
+    done
+    if command -v limine-snapper-sync >/dev/null; then
+        sudo limine-snapper-sync >/dev/null 2>&1
+        if sudo grep -q "^ *///${n} " /boot/limine.conf 2>/dev/null; then
+            say "fallback snapshot #$n is in the boot menu: Snapshots > $n (\"imac-patcher: before $1\")"
+        else
+            warn "fallback snapshot #$n has no boot entry yet (limine-snapper-sync; check /boot space)"
+            confirm "Continue anyway?" || return 1
+        fi
+    else
+        say "fallback snapshot #$n taken (no limine-snapper-sync: it has no boot entry)"
+    fi
+    SNAPSHOT_TAKEN=1
+}
+
 verify_cmdline() {   # $1 must be present, $2 must be absent
     # Read the UKI itself, not the EFI fallback: on a stock ESP the fallback is
     # the Limine binary and carries no .cmdline at all.
@@ -987,7 +1196,7 @@ state_label() {
 kernel_banner() {
     kernel_pending || return 0
     local gaps=()
-    amdgpu_patched_for "$TARGET_KREL"      || gaps+=(5k)
+    amdgpu_current_for "$TARGET_KREL"      || gaps+=(5k)
     audio_installed_is_ours "$TARGET_KREL" || gaps+=(audio)
     warn "kernel ${TARGET_KREL} is installed; you are running ${KREL}. A reboot is pending."
     if (( ${#gaps[@]} )); then
@@ -1023,14 +1232,46 @@ run_module() {   # $1 = apply|remove, $2 = id
         warn "${id}: ${action} failed (see messages above)"; return 1
     fi
 }
-
+# Every module, last applied first, then the build caches (they are only ours).
+remove_everything() {
+    local i m st rc=0
+    # One snapshot, named for the whole run, if any boot module will change.
+    for m in "${MODULES[@]}"; do
+        [[ $("mod_${m}_tier") == boot ]] || continue
+        st="$("mod_${m}_detect")"
+        if [[ $st == applied || $st == partial ]]; then fallback_snapshot "remove all" || return 1; break; fi
+    done
+    for (( i = ${#MODULES[@]} - 1; i >= 0; i-- )); do run_module remove "${MODULES[i]}" || rc=1; done
+    boot_sync_flush || rc=1
+    local caches=("${HOME}/.cache/kernel-5k-build" "$CACHE")
+    if compgen -G "${HOME}/.cache/kernel-5k-build/*" >/dev/null || compgen -G "${CACHE}/*" >/dev/null; then
+        confirm "Delete the build caches ($(du -sch "${caches[@]}" 2>/dev/null | tail -1 | cut -f1): kernel source, driver source)?" &&
+            sudo rm -rf "${caches[@]}" && say "build caches deleted"
+    fi
+    say "the fallback snapshots stay in the boot menu (snapper list; snapper delete <n> to drop one)"
+    return $rc
+}
+# Everything a run would change is lost at the next boot when the root is a
+# snapshot (Limine boots those read-only, under a RAM overlay): refuse up front.
+refuse_on_snapshot() {
+    booted_from_snapshot || return 0
+    warn "this boot is a read-only snapshot ($(grep -o 'rootflags=[^ ]*' /proc/cmdline)): changes made now are gone at the next boot."
+    warn "Boot the default entry to change the system, or make this snapshot the system first: sudo limine-snapper-restore"
+    exit 1
+}
 
 case "${1:-}" in
     --status) show_status; exit 0 ;;
     --apply|--remove)
         action="${1#--}"; shift
+        refuse_on_snapshot
         [[ ${1:-} == safe ]] && { set -- ; for m in "${MODULES[@]}"; do [[ $("mod_${m}_tier") == safe ]] && set -- "$@" "$m"; done; }
-        (( $# )) || { echo "usage: $0 --${action} <id...|safe>   ids: ${MODULES[*]}" >&2; exit 2; }
+        if [[ ${1:-} == all ]]; then
+            [[ -t 0 ]] && { sudo -v || true; }
+            if [[ $action == remove ]]; then remove_everything; exit; fi
+            set -- "${MODULES[@]}"
+        fi
+        (( $# )) || { echo "usage: $0 --${action} <id...|safe|all>   ids: ${MODULES[*]}" >&2; exit 2; }
         # Most modules need root, and boot's detection reads the ESP: take the
         # sudo ticket first so it doesn't read as n/a. Only from a terminal:
         # without one sudo can't ask, and every try counts toward pam_faillock
@@ -1041,19 +1282,22 @@ case "${1:-}" in
             [[ " ${MODULES[*]} " == *" $id "* ]] || { warn "unknown module: $id"; continue; }
             run_module "$action" "$id"
         done
+        boot_sync_flush || exit 1
         exit 0 ;;
     --force|"") ;;
-    *) echo "usage: $0 [--status | --apply <id...|safe> | --remove <id...|safe>]"; exit 2 ;;
+    *) echo "usage: $0 [--status | --apply <id...|safe|all> | --remove <id...|safe|all>]"; exit 2 ;;
 esac
 
 # ── interactive ────────────────────────────────────────────────────────────
 [[ -t 0 ]] && { sudo -v || true; }
 show_status
 echo
+booted_from_snapshot && refuse_on_snapshot
+menu=("Apply all safe patches" "Choose patches to apply" "Remove a patch" "Remove everything" "Quit")
 if ((HAVE_GUM)); then
-    sel=$(gum choose "Apply all safe patches" "Choose patches to apply" "Remove a patch" "Quit")
+    sel=$(gum choose "${menu[@]}")
 else
-    select sel in "Apply all safe patches" "Choose patches to apply" "Remove a patch" "Quit"; do break; done
+    select sel in "${menu[@]}"; do break; done
 fi
 case "$sel" in
     "Apply all safe patches")
@@ -1079,5 +1323,8 @@ case "$sel" in
         if ((HAVE_GUM)); then pick=$(gum choose "${avail[@]}"); else
             select p in "${avail[@]}"; do pick=$p; break; done; fi
         [[ -n ${pick:-} ]] && run_module remove "${pick%% *}" ;;
+    "Remove everything")
+        confirm "Remove every change this patcher made (5K, macOS mode, audio, ...)?" && remove_everything ;;
     *) exit 0 ;;
 esac
+boot_sync_flush

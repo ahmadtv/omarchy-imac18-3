@@ -11,7 +11,8 @@
 #
 # Instead:
 #
-#   default entry  ->  omarchy_linux.efi          (known-good module)
+#   default entry  ->  omarchy_<pkgbase>.efi      (known-good module; <pkgbase> is
+#                                                  the running kernel's package)
 #   test entry     ->  omarchy_linux-5ktest.efi   (the build under test)
 #
 # The module is baked into the initramfs (MODULES=(amdgpu) + the kms hook), so
@@ -38,7 +39,7 @@ KREL="$(uname -r)"
 MODDIR="/usr/lib/modules/${KREL}/kernel/drivers/gpu/drm/amd/amdgpu"
 MODULE="${MODDIR}/amdgpu.ko.zst"
 ESP=/boot
-UKI="${ESP}/EFI/Linux/omarchy_linux.efi"
+UKI="${ESP}/EFI/Linux/omarchy_$(cat "/usr/lib/modules/${KREL}/pkgbase" 2>/dev/null || echo linux).efi"
 TESTUKI="${ESP}/EFI/Linux/omarchy_linux-5ktest.efi"
 CONF="${ESP}/limine.conf"
 MARKER="/Test - 5K boot fixes"
@@ -226,7 +227,7 @@ status)
 
 	if [[ -f $UKI ]]; then
 		tmp="$(mktemp)"; extract_module "$UKI" "$tmp" 2>/dev/null || true
-		printf '  %-26s %s\n' "default (Omarchy/linux)" "$([[ -s $tmp ]] && describe_module "$tmp" || echo '?')"
+		printf '  %-26s %s\n' "default ($(basename "$UKI"))" "$([[ -s $tmp ]] && describe_module "$tmp" || echo '?')"
 		rm -f "$tmp"
 	fi
 

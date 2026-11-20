@@ -1,0 +1,159 @@
+iMac 5K stitch: attach the right tile's plane on a modeset from an off crtc
+
+Applies ON TOP of imac5k-stitch-layer-7.x.patch and
+imac5k-stitch-hide-slave.patch.
+
+When the crtc was off and a client turns it on with a new framebuffer in
+one commit (Plymouth's reboot/shutdown splash after the compositor exits,
+or any KMS client doing disable + SetCrtc), the left tile showed the
+picture and the right tile stayed black: the splash logo was cut exactly
+at the seam.
+
+Two gaps in the stitch layer, both only on that path:
+
+- dc_commit_streams() brings the new streams up with no planes; planes are
+  attached by the update_planes_and_stream() calls in
+  amdgpu_dm_commit_planes(). The stitch pushed the peer (right-tile)
+  surface update only when plane_needs_flip, which needs an old fb. With
+  the crtc off there is none, so the peer stream ran with no plane. Now
+  the peer plane is attached on that path too, with only its scaling (no
+  flip_addr/plane_info, since the root's were not filled for this index).
+- The peer dc_plane_state takes its buffer address from afb->address at
+  atomic check, which is still 0 for a framebuffer that has never been
+  pinned. prepare_fb filled the address only for the root plane; it now
+  fills the peer plane too when it is new.
+
+A compositor never hits this (it flips, and a flip pushes the peer update
+with the root's address), and neither does the fbdev restore (its fb was
+pinned long before). A static splash never flips, so the right tile stayed
+black until power-off.
+
+Tested on the iMac18,3 (linux-omarchy 7.2.15): a KMS test client that
+disables the crtc and then modesets onto a new dumb buffer (left half blue,
+right half orange) showed the right half black before and orange after.
+
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -11741,6 +11741,7 @@
+ 		struct drm_framebuffer *fb = new_plane_state->fb;
+ 		struct amdgpu_framebuffer *afb = (struct amdgpu_framebuffer *)fb;
+ 		bool plane_needs_flip;
++		bool tiled_split;
+ 		struct dc_plane_state *dc_plane;
+ 		struct dm_plane_state *dm_new_plane_state = to_dm_plane_state(new_plane_state);
+ 
+@@ -11793,10 +11794,11 @@
+ 		 * the scaling is recomputed every flip. The stream timing
+ 		 * carries the tile size (forced at stream creation).
+ 		 */
+-		if (acrtc_state->stream_peer && dm_new_plane_state->dc_state_peer &&
+-		    plane == pcrtc->primary && new_plane_state->fb &&
+-		    new_plane_state->fb->width >=
+-			    2 * acrtc_state->stream->timing.h_addressable) {
++		tiled_split = acrtc_state->stream_peer && dm_new_plane_state->dc_state_peer &&
++			      plane == pcrtc->primary && new_plane_state->fb &&
++			      new_plane_state->fb->width >=
++				      2 * acrtc_state->stream->timing.h_addressable;
++		if (tiled_split) {
+ 			int tile_w = acrtc_state->stream->timing.h_addressable;
+ 			int tile_h = acrtc_state->stream->timing.v_addressable;
+ 
+@@ -11814,6 +11816,19 @@
+ 		pflip_present = pflip_present || plane_needs_flip;
+ 
+ 		if (!plane_needs_flip) {
++			/*
++			 * Tiled stitch: no flip when the plane had no fb before
++			 * (crtc was off, e.g. Plymouth's shutdown splash), but
++			 * dc_commit_streams() brought the peer stream up with
++			 * no planes; only these surface updates attach them.
++			 * Attach the peer plane too, with no flip_addr or
++			 * plane_info (its address was filled in prepare_fb),
++			 * or the right tile stays black until the next flip.
++			 */
++			if (tiled_split) {
++				tiled_peer_plane = dm_new_plane_state->dc_state_peer;
++				tiled_peer_idx = -1;
++			}
+ 			planes_count += 1;
+ 			continue;
+ 		}
+@@ -11832,13 +11847,11 @@
+ 		bundle->surface_updates[planes_count].plane_info =
+ 			&bundle->plane_infos[planes_count];
+ 
+-		/* Tiled stitch: capture the peer plane only on an actual flip, so
+-		 * its reuse of this index's flip_addr/plane_info (just filled) is
+-		 * valid. */
+-		if (acrtc_state->stream_peer && dm_new_plane_state->dc_state_peer &&
+-		    plane == pcrtc->primary && new_plane_state->fb &&
+-		    new_plane_state->fb->width >=
+-			    2 * acrtc_state->stream->timing.h_addressable) {
++		/*
++		 * Tiled stitch: on a flip the peer plane reuses this index's
++		 * flip_addr/plane_info (just filled).
++		 */
++		if (tiled_split) {
+ 			tiled_peer_plane = dm_new_plane_state->dc_state_peer;
+ 			tiled_peer_idx = planes_count;
+ 		}
+@@ -12058,10 +12071,13 @@
+ 					 bundle->surface_updates);
+ 
+ 		/*
+-		 * Tiled stitch: flip the peer (right-tile) plane to the same
+-		 * BO/frame on the peer stream, under the same dc_lock. Reuses
+-		 * the root plane's flip_addr (same surface) and plane_info,
+-		 * with the right-half viewport captured above.
++		 * Tiled stitch: update the peer (right-tile) plane on the peer
++		 * stream in the same frame, under the same dc_lock, with the
++		 * right-half viewport captured above. On a flip it reuses the
++		 * root plane's flip_addr (same BO) and plane_info; on an attach
++		 * (tiled_peer_idx < 0: no flip, the plane is new) it carries
++		 * only the surface and its scaling, the address having been
++		 * filled in prepare_fb.
+ 		 */
+ 		if (tiled_peer_plane && acrtc_state->stream_peer) {
+ 			/*
+@@ -12081,8 +12097,10 @@
+ 			}
+ 			tiled_peer_su.surface = tiled_peer_plane;
+ 			tiled_peer_su.scaling_info = &tiled_peer_scaling;
+-			tiled_peer_su.flip_addr = &bundle->flip_addrs[tiled_peer_idx];
+-			tiled_peer_su.plane_info = &bundle->plane_infos[tiled_peer_idx];
++			if (tiled_peer_idx >= 0) {
++				tiled_peer_su.flip_addr = &bundle->flip_addrs[tiled_peer_idx];
++				tiled_peer_su.plane_info = &bundle->plane_infos[tiled_peer_idx];
++			}
+ 
+ 			update_planes_and_stream_adapter(dm->dc,
+ 						 acrtc_state->update_type,
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
+@@ -993,6 +993,26 @@
+ 			afb->tmz_surface);
+ 	}
+ 
++	/*
++	 * Tiled stitch: the peer (right-tile) plane is created at atomic
++	 * check from afb->address too, which is still 0 for an fb that has
++	 * never been pinned. Fill it here like the root plane, or a modeset
++	 * that brings in a new fb (e.g. Plymouth's first frame after the
++	 * crtc was off) scans the right tile out of address 0 until the
++	 * next page flip, and a static splash never flips.
++	 */
++	if (dm_plane_state_new->dc_state_peer &&
++	    dm_plane_state_old->dc_state_peer != dm_plane_state_new->dc_state_peer) {
++		struct dc_plane_state *peer = dm_plane_state_new->dc_state_peer;
++
++		amdgpu_dm_plane_fill_plane_buffer_attributes(
++			adev, afb, peer->format, peer->rotation,
++			afb->tiling_flags,
++			&peer->tiling_info, &peer->plane_size,
++			&peer->dcc, &peer->address,
++			afb->tmz_surface);
++	}
++
+ 	return 0;
+ 
+ error_unpin:
