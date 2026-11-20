@@ -4,6 +4,7 @@ What changed for someone running the patcher, newest first. Small fixes count. T
 
 ## 2026-11-20
 
+- **The right half of the 5K panel no longer fails link training on boot or wake.** About one boot in five, and now and then after the screen woke from DPMS, the kernel log showed `enabling link 1 failed: 15` for the panel's right half. The picture still came up, but only after up to four training attempts. The right half drops one alignment flag in the short gap between training and video while every lane stays locked, and sets it again once video starts; the driver treated that gap as a lost link. It now accepts the link when alignment is the only thing missing, on the iMac's second tile only. Rebuild with `./scripts/imac-patcher --apply 5k` and reboot.
 - **`--remove color` keeps your scale.** Since the colour rule moved to its own block, the iMac panel's scale often lived only there, so removing wide-gamut colour dropped the panel back to Omarchy's default scale. Removal now leaves a plain `eDP-1` rule with the same scale (no P3, no 10-bit); applying colour again takes it back into the block.
 - **The status after `--remove` reads `not applied`.** Audio showed `partial` because the stock CS8409 driver loads on this board too (without speakers), and boot hygiene showed `partial` on any clean boot layout. Audio is now `partial` only when part of the DKMS driver is in place; boot hygiene only when its hook is installed but the layout has gone wrong again.
 

@@ -55,6 +55,11 @@ The installer applies these in order to pristine kernel source:
   mistaken for a hotplug. Posted upstream in drm/amd#4455. With this alone the
   kernel exposes two proper tiles and a tile-aware compositor (Mutter, KWin)
   stitches them.
+- **`imac5k-slave-link-align.patch`** — the right tile's DP link no longer
+  fails training ("enabling link 1 failed") when its sink drops interlane
+  alignment between the training pattern and video while every lane stays
+  locked; it sets alignment again once video runs. Before it, about one boot
+  in five logged the failure and every wake paid for extra retrains.
 - **`imac5k-stitch-layer-7.x.patch`** — erik2's single-display stitch
   (`amdgpu.tiled_stitch`) on top of the core, plus its two boot fixes: an early
   modeset so the disk-password prompt is full width, and a settle-and-resync
@@ -83,6 +88,7 @@ Then three fixes that aren't about 5K, carried in the same module build:
 
 ```bash
 patch -p1 < patches/imac5k-lean-core-7.2.x.patch
+patch -p1 < patches/imac5k-slave-link-align.patch
 patch -p1 < patches/imac5k-stitch-layer-7.x.patch
 patch -p1 < patches/imac5k-stitch-hide-slave.patch
 patch -p1 < patches/imac5k-stitch-peer-attach.patch

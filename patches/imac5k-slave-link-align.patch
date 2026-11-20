@@ -1,0 +1,85 @@
+iMac 5K: accept the right tile's link when only interlane alignment is pending
+
+Applies ON TOP of imac5k-lean-core-7.2.x.patch.
+
+The right-tile (slave) DP link sometimes failed to come up on a modeset or
+DPMS wake: "enabling link 1 failed: 15" (DC_FAIL_DP_LINK_TRAINING), in about
+one boot in five and about one slave bring-up in 45 overall. The panel
+looked normal afterwards, but each failed attempt costs a retrain and the
+full failure leaves the link up only because the last attempt keeps the PHY
+on.
+
+Clock recovery and channel EQ succeed on every attempt. The failure is the
+link-loss check in dp_transition_to_video_idle() (non-eDP links only, so the
+root tile never runs it): 5 ms after the training pattern goes off, the
+slave sink has cleared INTERLANE_ALIGN_DONE (DPCD 0x204) while every lane
+still reports CR_DONE, CHANNEL_EQ_DONE and SYMBOL_LOCKED (0x202/0x203 =
+0x77 0x77). Alignment does not come back within 150 ms of polling, and
+retraining reproduces the same state; once video is running the sink sets
+INTERLANE_ALIGN_DONE again by itself (0x204 = 0x81, then 0x01, on both
+tiles).
+
+So for the Apple tiled slave only, a link loss reported after video idle
+is accepted when the re-read lane status shows CR, EQ and symbol lock on
+every active lane. Any other lane-level loss still fails the attempt and
+falls back as before, and every other link is untouched.
+
+Tested on the iMac18,3 (linux-omarchy 7.2.15), 100 DPMS off/on cycles: the
+check accepted an alignment-only loss in 52 of 99 slave bring-ups, with no
+failed training attempt and no "enabling link failed". Before the fix,
+attempt 1 failed in 7 of 8 bring-ups.
+
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c
+@@ -1524,6 +1524,37 @@
+ 
+ }
+ 
++/*
++ * The Apple 5K second tile clears INTERLANE_ALIGN_DONE as soon as the
++ * training pattern goes off and sets it again only once video arrives,
++ * while clock recovery, EQ and symbol lock hold on every lane. Retraining
++ * cannot change that, so accept the link when alignment is all it lacks.
++ */
++static bool apple_5k_slave_lt_align_only(struct dc_link *link,
++					 const struct link_training_settings *lt_settings)
++{
++	uint8_t dpcd_buf[6] = {0};
++	union lane_status lane_status;
++	uint32_t lane;
++
++	if (!dc_link_is_apple_tiled_slave(link) ||
++	    core_link_read_dpcd(link, DP_SINK_COUNT, dpcd_buf,
++				sizeof(dpcd_buf)) != DC_OK)
++		return false;
++
++	for (lane = 0; lane < (uint32_t)lt_settings->link_settings.lane_count; lane++) {
++		lane_status.raw = dp_get_nibble_at_index(&dpcd_buf[2], lane);
++		if (!lane_status.bits.CHANNEL_EQ_DONE_0 ||
++		    !lane_status.bits.CR_DONE_0 ||
++		    !lane_status.bits.SYMBOL_LOCKED_0)
++			return false;
++	}
++
++	DC_LOG_HW_LINK_TRAINING("%s: link(%d) lanes locked, interlane align pending video\n",
++				__func__, link->link_index);
++	return true;
++}
++
+ static enum link_training_result dp_transition_to_video_idle(
+ 	struct dc_link *link,
+ 	const struct link_resource *link_res,
+@@ -1547,8 +1578,12 @@
+ 		 */
+ 		if (link->connector_signal != SIGNAL_TYPE_EDP && status == LINK_TRAINING_SUCCESS) {
+ 			msleep(5);
+-			if (!link->skip_fallback_on_link_loss)
++			if (!link->skip_fallback_on_link_loss) {
+ 				status = dp_check_link_loss_status(link, lt_settings);
++				if (status == LINK_TRAINING_LINK_LOSS &&
++				    apple_5k_slave_lt_align_only(link, lt_settings))
++					status = LINK_TRAINING_SUCCESS;
++			}
+ 		}
+ 		return status;
+ 	}
